@@ -1,0 +1,23 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: migration-api
+  namespace: migration-pfe
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Source
+    sourceStrategy:
+      from:
+        kind: ImageStreamTag
+        name: python:3.11-ubi9
+        namespace: openshift
+      env:
+        - name: PIP_NO_CACHE_DIR
+          value: "1"
+  output:
+    to:
+      kind: ImageStreamTag
+      name: migration-api:latest
+  triggers: []

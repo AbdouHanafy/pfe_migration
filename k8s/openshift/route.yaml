@@ -1,0 +1,13 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: migration-api
+  namespace: migration-pfe
+spec:
+  to:
+    kind: Service
+    name: migration-api
+  port:
+    targetPort: http
+  tls:
+    termination: edge

@@ -1,0 +1,21 @@
+:root {
+  font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  color: #e6e9f2;
+  background-color: #0f1220;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}

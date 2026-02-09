@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-api
+  namespace: migration-pfe
+spec:
+  selector:
+    app: migration-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
