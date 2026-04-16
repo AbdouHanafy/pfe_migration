@@ -8,6 +8,7 @@ import Card from '../components/Card'
 import JsonBlock from '../components/JsonBlock'
 import Pill from '../components/Pill'
 import FieldGrid from '../components/FieldGrid'
+import { analyzeLocalVmwareBundle } from '../utils/localVmware'
 
 const formatBytes = (value) => {
   if (!value) return '0 B'
@@ -163,16 +164,15 @@ const HomePage = () => {
     try {
       let data
       if (diskFiles.length > 0) {
-        const formData = new FormData()
-        formData.append('vm_name', vmName)
-        diskFiles.forEach((file) => {
-          formData.append('bundle_files', file)
-        })
-        data = await api.fetchJson('/api/v1/migration/analyze-upload', {
-          method: 'POST',
-          body: formData,
-        })
-        setVmSource('uploaded-vmware-workstation')
+        const localResult = await analyzeLocalVmwareBundle(diskFiles, vmName)
+        data = {
+          vm_name: localResult.vm_name,
+          source: localResult.source,
+          details: localResult.details,
+          analysis: localResult.analysis,
+        }
+        setVmName(localResult.vm_name || vmName)
+        setVmSource('local-browser-vmware')
       } else {
         data = await api.fetchJson(`/api/v1/migration/analyze/${vmName}?source=${vmSource}`, {
           method: 'POST',
@@ -194,16 +194,9 @@ const HomePage = () => {
     try {
       let data
       if (diskFiles.length > 0) {
-        const formData = new FormData()
-        formData.append('vm_name', vmName)
-        diskFiles.forEach((file) => {
-          formData.append('bundle_files', file)
-        })
-        data = await api.fetchJson('/api/v1/migration/plan-upload', {
-          method: 'POST',
-          body: formData,
-        })
-        setVmSource('uploaded-vmware-workstation')
+        data = await analyzeLocalVmwareBundle(diskFiles, vmName)
+        setVmName(data.vm_name || vmName)
+        setVmSource('local-browser-vmware')
       } else {
         data = await api.fetchJson(`/api/v1/migration/plan/${vmName}?source=${vmSource}`, {
           method: 'POST',
