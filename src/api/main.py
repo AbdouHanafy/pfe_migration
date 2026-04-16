@@ -169,22 +169,52 @@ def _sanitize_filename(filename: str) -> str:
     return safe_name or "disk.img"
 
 
-def _persist_uploaded_disk(upload: UploadFile, target_vm_name: str) -> tuple[str, str]:
+def _select_primary_disk_path(upload_dir: Path, filenames: List[str]) -> Path:
+    preferred = []
+    split_pattern = "-s"
+
+    for name in filenames:
+        path = upload_dir / name
+        suffix = path.suffix.lower()
+        if suffix not in {".vmdk", ".qcow2", ".img", ".raw"}:
+            continue
+        if suffix == ".vmdk" and split_pattern not in path.stem.lower():
+            preferred.append(path)
+
+    if preferred:
+        preferred.sort(key=lambda item: len(item.name))
+        return preferred[0]
+
+    candidates = [upload_dir / name for name in filenames]
+    candidates = [path for path in candidates if path.suffix.lower() in {".vmdk", ".qcow2", ".img", ".raw"}]
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucun disque exploitable trouve dans les fichiers uploades."
+        )
+    candidates.sort(key=lambda item: len(item.name))
+    return candidates[0]
+
+
+def _persist_uploaded_disks(uploads: List[UploadFile], target_vm_name: str) -> tuple[str, str, List[str]]:
     os.makedirs(config.DATA_DIR, exist_ok=True)
     upload_dir = Path(config.DATA_DIR) / "uploads" / f"{target_vm_name}-{uuid4().hex[:8]}"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = _sanitize_filename(upload.filename or f"{target_vm_name}.img")
-    disk_path = upload_dir / safe_name
+    saved_names: List[str] = []
+    for upload in uploads:
+        safe_name = _sanitize_filename(upload.filename or f"{target_vm_name}.img")
+        disk_path = upload_dir / safe_name
+        try:
+            with disk_path.open("wb") as buffer:
+                shutil.copyfileobj(upload.file, buffer, length=1024 * 1024)
+        finally:
+            upload.file.close()
+        saved_names.append(safe_name)
 
-    try:
-        with disk_path.open("wb") as buffer:
-            shutil.copyfileobj(upload.file, buffer, length=1024 * 1024)
-    finally:
-        upload.file.close()
-
-    detected_format = disk_path.suffix.lower().lstrip(".") or "raw"
-    return str(disk_path), detected_format
+    primary_disk_path = _select_primary_disk_path(upload_dir, saved_names)
+    detected_format = primary_disk_path.suffix.lower().lstrip(".") or "raw"
+    return str(primary_disk_path), detected_format, saved_names
 
 
 def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, namespace: str) -> None:
@@ -513,7 +543,7 @@ async def migrate_to_openshift(
 async def migrate_uploaded_disk_to_openshift(
     vm_name: str,
     background_tasks: BackgroundTasks,
-    disk_file: UploadFile = File(...),
+    disk_files: List[UploadFile] = File(...),
     source_disk_format: str = Form(""),
     target_vm_name: str = Form(...),
     pvc_size: str = Form("20Gi"),
@@ -532,13 +562,14 @@ async def migrate_uploaded_disk_to_openshift(
             detail="ENABLE_REAL_MIGRATION=false. Activez la migration reelle via la config."
         )
 
-    if not disk_file.filename:
+    valid_files = [upload for upload in disk_files if upload and upload.filename]
+    if not valid_files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Aucun fichier disque fourni."
         )
 
-    stored_path, detected_format = _persist_uploaded_disk(disk_file, target_vm_name)
+    stored_path, detected_format, uploaded_files = _persist_uploaded_disks(valid_files, target_vm_name)
     effective_format = (source_disk_format or detected_format).lower()
     effective_namespace = namespace or config.OPENSHIFT_NAMESPACE
 
@@ -559,7 +590,7 @@ async def migrate_uploaded_disk_to_openshift(
         "namespace": effective_namespace,
         "source_disk_path": stored_path,
         "source_disk_format": effective_format,
-        "uploaded_filename": disk_file.filename
+        "uploaded_files": uploaded_files
     }
     job = job_store.create_job(vm_name, plan)
     background_tasks.add_task(_run_openshift_migration_job, job.job_id, req, effective_namespace)
@@ -571,7 +602,7 @@ async def migrate_uploaded_disk_to_openshift(
         "namespace": effective_namespace,
         "source_disk_path": stored_path,
         "source_disk_format": effective_format,
-        "uploaded_filename": disk_file.filename,
+        "uploaded_files": uploaded_files,
         "status": "queued"
     }
 

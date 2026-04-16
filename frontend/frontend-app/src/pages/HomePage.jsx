@@ -26,6 +26,33 @@ const formatBytes = (value) => {
 
 const fileStem = (filename) => (filename || '').replace(/\.[^.]+$/, '')
 
+const buildMigrationGate = (planData, vmName) => {
+  if (!vmName) {
+    return { ready: false, tone: 'neutral', message: 'Select or enter a VM name first.' }
+  }
+
+  if (!planData?.analysis || !planData?.conversion_plan || !planData?.strategy) {
+    return { ready: false, tone: 'neutral', message: 'Run Plan first to validate the VM before real migration.' }
+  }
+
+  const compatibility = planData.analysis?.compatibility
+  const strategy = planData.strategy?.strategy
+
+  if (compatibility === 'non_compatible') {
+    return { ready: false, tone: 'danger', message: 'Migration blocked: the VM is marked non compatible.' }
+  }
+
+  if (strategy === 'alternative') {
+    return { ready: false, tone: 'warn', message: 'Migration blocked: IA recommends an alternative strategy instead of direct migration.' }
+  }
+
+  return {
+    ready: true,
+    tone: 'ok',
+    message: `Migration allowed after plan check. Compatibility: ${compatibility || 'unknown'}, strategy: ${strategy || 'unknown'}.`
+  }
+}
+
 const HomePage = () => {
   const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE || 'http://localhost:8000')
   const [vms, setVms] = useState([])
@@ -37,7 +64,7 @@ const HomePage = () => {
   const [jobId, setJobId] = useState('')
   const [openShiftResult, setOpenShiftResult] = useState(null)
   const [error, setError] = useState(null)
-  const [diskFile, setDiskFile] = useState(null)
+  const [diskFiles, setDiskFiles] = useState([])
 
   const [loading, setLoading] = useState({
     health: false,
@@ -62,6 +89,7 @@ const HomePage = () => {
   const { token } = useAuth()
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
   const { logs, pushLog } = useLogger()
+  const migrationGate = useMemo(() => buildMigrationGate(analysis, vmName), [analysis, vmName])
 
   const setActionLoading = (key, value) => {
     setLoading((prev) => ({ ...prev, [key]: value }))
@@ -212,8 +240,9 @@ const HomePage = () => {
 
   const onOpenShift = async () => {
     if (!vmName) return pushLog('VM name required (source label)')
+    if (!migrationGate.ready) return pushLog(migrationGate.message)
     if (!targetVmName) return pushLog('Target VM name is required')
-    if (!diskFile && !sourceDiskPath) {
+    if (diskFiles.length === 0 && !sourceDiskPath) {
       return pushLog('Select a local disk file or enter a bastion disk path')
     }
 
@@ -222,9 +251,11 @@ const HomePage = () => {
     try {
       let data
 
-      if (diskFile) {
+      if (diskFiles.length > 0) {
         const formData = new FormData()
-        formData.append('disk_file', diskFile)
+        diskFiles.forEach((file) => {
+          formData.append('disk_files', file)
+        })
         formData.append('source_disk_format', sourceDiskFormat || 'vmdk')
         formData.append('target_vm_name', targetVmName)
         formData.append('pvc_size', pvcSize || '20Gi')
@@ -331,6 +362,8 @@ const HomePage = () => {
                   setVmName(vm.name)
                   setVmSource(discoverySource)
                   setTargetVmName((current) => current || vm.name)
+                  setAnalysis(null)
+                  setOpenShiftResult(null)
                   pushLog(`Selected VM: ${vm.name}`)
                 }}
               >
@@ -348,7 +381,11 @@ const HomePage = () => {
               <Input
                 placeholder="vm name (for example: devops)"
                 value={vmName}
-                onChange={(e) => setVmName(e.target.value)}
+                onChange={(e) => {
+                  setVmName(e.target.value)
+                  setAnalysis(null)
+                  setOpenShiftResult(null)
+                }}
               />
               <Button onClick={onAnalyze} disabled={loading.analyze}>
                 {btnLabel('analyze') || 'Analyze'}
@@ -389,25 +426,30 @@ const HomePage = () => {
         <Card
           className="wide"
           title="OpenShift Real Migration"
-          hint="Upload a local disk from your browser or use a disk path that already exists on the bastion."
+          hint="Upload a local disk from your browser or use a disk path that already exists on the bastion. Real migration unlocks only after a successful Plan."
           actions={
-            <Button onClick={onOpenShift} disabled={loading.openshift}>
+            <Button onClick={onOpenShift} disabled={loading.openshift || !migrationGate.ready}>
               {btnLabel('openshift') || 'Migrate to OpenShift'}
             </Button>
           }
         >
+          <p className="hint">
+            Precheck: <strong>{migrationGate.message}</strong>
+          </p>
           <FieldGrid>
             <Input
               type="file"
+              multiple
               accept=".vmdk,.qcow2,.img,.raw"
               onChange={(e) => {
-                const file = e.target.files?.[0] || null
-                setDiskFile(file)
+                const files = Array.from(e.target.files || [])
+                setDiskFiles(files)
 
-                if (!file) return
+                if (files.length === 0) return
 
-                const inferredName = fileStem(file.name)
-                const inferredFormat = file.name.split('.').pop()?.toLowerCase() || 'vmdk'
+                const primaryFile = files.find((file) => /\.vmdk$/i.test(file.name) && !/-s\d+\.vmdk$/i.test(file.name)) || files[0]
+                const inferredName = fileStem(primaryFile.name)
+                const inferredFormat = primaryFile.name.split('.').pop()?.toLowerCase() || 'vmdk'
 
                 setVmName((current) => current || inferredName)
                 setTargetVmName((current) => current || inferredName)
@@ -427,9 +469,10 @@ const HomePage = () => {
             <Input placeholder="bios" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
             <Input placeholder="vm-migration" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
           </FieldGrid>
-          {diskFile ? (
+          {diskFiles.length > 0 ? (
             <p className="hint">
-              Local file selected: <strong>{diskFile.name}</strong> ({formatBytes(diskFile.size)})
+              Local files selected: <strong>{diskFiles.length}</strong> ({formatBytes(diskFiles.reduce((total, file) => total + file.size, 0))}).
+              For split VMware disks, select the descriptor and all `-s###.vmdk` parts together.
             </p>
           ) : (
             <p className="hint">
