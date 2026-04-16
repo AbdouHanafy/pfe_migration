@@ -1,4 +1,5 @@
 from .client import (
+    check_tools,
     ensure_namespace,
     convert_disk_if_needed,
     upload_disk,
@@ -7,6 +8,7 @@ from .client import (
 )
 
 __all__ = [
+    "check_tools",
     "ensure_namespace",
     "convert_disk_if_needed",
     "upload_disk",

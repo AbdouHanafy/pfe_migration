@@ -5,6 +5,7 @@ OpenShift/KubeVirt helpers for real migration steps.
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 import os
+import shutil
 import subprocess
 import json
 
@@ -27,6 +28,15 @@ def _run(cmd: list[str]) -> Tuple[int, str, str]:
         check=False
     )
     return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def check_tools() -> Dict[str, bool]:
+    """Retourne la disponibilite des binaires externes requis."""
+    return {
+        "oc": shutil.which("oc") is not None,
+        "virtctl": shutil.which("virtctl") is not None,
+        "qemu-img": shutil.which("qemu-img") is not None
+    }
 
 def get_uploadproxy_url() -> str:
     if config.OPENSHIFT_UPLOADPROXY_URL:

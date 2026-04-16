@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createApi } from '../services/api'
 import { useLogger } from '../hooks/useLogger'
 import { useAuth } from '../hooks/useAuth'
@@ -49,6 +49,28 @@ const HomePage = () => {
   const setActionLoading = (key, value) => {
     setLoading((prev) => ({ ...prev, [key]: value }))
   }
+
+  useEffect(() => {
+    if (!jobId || !migration) return undefined
+    if (migration.status === 'completed' || migration.status === 'failed') return undefined
+
+    const interval = setInterval(async () => {
+      try {
+        const data = await api.fetchJson(`/api/v1/migration/status/${jobId}`)
+        setMigration(data)
+
+        if (data.status === 'completed' || data.status === 'failed') {
+          pushLog(`Job ${jobId} finished: ${data.status}`)
+        }
+      } catch (err) {
+        const msg = err.message || 'Unknown error'
+        setError(`Auto status refresh: ${msg}`)
+        pushLog(`Auto status refresh failed: ${msg}`)
+      }
+    }, 3000)
+
+    return () => clearInterval(interval)
+  }, [api, jobId, migration, pushLog])
 
   const handleError = (action, err) => {
     const msg = err.message || 'Unknown error'
@@ -197,6 +219,8 @@ const HomePage = () => {
         body: JSON.stringify(payload),
       })
       setOpenShiftResult(data)
+      setJobId(data.job_id || '')
+      setMigration(data.job_id ? { job_id: data.job_id, status: data.status } : null)
       pushLog(`✅ OpenShift migration submitted for ${targetVmName}`)
     } catch (err) {
       handleError('OpenShift migration', err)

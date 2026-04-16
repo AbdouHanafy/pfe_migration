@@ -2,7 +2,7 @@
 API principale pour le système de migration
 """
 
-from fastapi import FastAPI, HTTPException, status, Depends, Header, Query
+from fastapi import FastAPI, HTTPException, status, Depends, Header, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Optional
 import logging
@@ -22,6 +22,7 @@ from src.conversion import build_conversion_plan
 from src.migration import choose_strategy, start_migration
 from src.monitoring import job_store, build_report
 from src.openshift import (
+    check_tools,
     ensure_namespace,
     convert_disk_if_needed,
     upload_disk,
@@ -157,6 +158,48 @@ class OpenShiftMigrationRequest(BaseModel):
     firmware: str = Field("bios", description="bios ou uefi")
     namespace: Optional[str] = Field(None, description="Namespace OpenShift")
 
+
+def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, namespace: str) -> None:
+    """Execute la migration OpenShift hors du cycle de requete HTTP."""
+    try:
+        job_store.update_status(job_id, "running")
+
+        job_store.add_step(job_id, "namespace", "running")
+        ensure_namespace(namespace)
+        job_store.finish_last_step(job_id, "completed")
+
+        job_store.add_step(job_id, "conversion", "running")
+        image_path = convert_disk_if_needed(req.source_disk_path, req.source_disk_format)
+        job_store.finish_last_step(job_id, "completed")
+
+        job_store.add_step(job_id, "upload", "running")
+        upload_result = upload_disk(
+            image_path=image_path,
+            pvc_name=f"{req.target_vm_name}-disk",
+            size=req.pvc_size,
+            namespace=namespace
+        )
+        job_store.finish_last_step(job_id, "completed")
+
+        job_store.add_step(job_id, "apply-manifest", "running")
+        manifest = build_vm_manifest(
+            vm_name=req.target_vm_name,
+            namespace=namespace,
+            pvc_name=upload_result.pvc_name,
+            memory=req.memory,
+            cpu_cores=req.cpu_cores,
+            firmware=req.firmware
+        )
+        apply_manifest(manifest)
+        job_store.finish_last_step(job_id, "completed")
+
+        job_store.update_status(job_id, "completed")
+    except Exception as exc:
+        job = job_store.get_job(job_id)
+        if job and job.steps and job.steps[-1]["ended_at"] is None:
+            job_store.finish_last_step(job_id, "failed")
+        job_store.update_status(job_id, "failed", str(exc))
+
 @app.on_event("startup")
 async def startup_event():
     """Initialisation au démarrage"""
@@ -203,7 +246,8 @@ async def health_check(_: None = Depends(_require_auth)):
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": {
-            "kvm_connection": kvm_discoverer.conn is not None
+            "kvm_connection": kvm_discoverer.conn is not None,
+            "tools": check_tools()
         }
     }
 
@@ -401,7 +445,12 @@ async def get_migration_report(job_id: str, _: None = Depends(_require_auth)):
     return build_report(job)
 
 @app.post("/api/v1/migration/openshift/{vm_name}")
-async def migrate_to_openshift(vm_name: str, req: OpenShiftMigrationRequest, _: None = Depends(_require_auth)):
+async def migrate_to_openshift(
+    vm_name: str,
+    req: OpenShiftMigrationRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(_require_auth)
+):
     """
     Migration reelle vers OpenShift (necessite oc + virtctl configures).
     """
@@ -412,35 +461,22 @@ async def migrate_to_openshift(vm_name: str, req: OpenShiftMigrationRequest, _: 
         )
 
     namespace = req.namespace or config.OPENSHIFT_NAMESPACE
-    ensure_namespace(namespace)
-
-    image_path = convert_disk_if_needed(req.source_disk_path, req.source_disk_format)
-
-    upload_result = upload_disk(
-        image_path=image_path,
-        pvc_name=f"{req.target_vm_name}-disk",
-        size=req.pvc_size,
-        namespace=namespace
-    )
-
-    manifest = build_vm_manifest(
-        vm_name=req.target_vm_name,
-        namespace=namespace,
-        pvc_name=upload_result.pvc_name,
-        memory=req.memory,
-        cpu_cores=req.cpu_cores,
-        firmware=req.firmware
-    )
-    apply_manifest(manifest)
+    plan = {
+        "strategy": {"strategy": "openshift-background"},
+        "target_vm_name": req.target_vm_name,
+        "namespace": namespace,
+        "source_disk_path": req.source_disk_path,
+        "source_disk_format": req.source_disk_format
+    }
+    job = job_store.create_job(vm_name, plan)
+    background_tasks.add_task(_run_openshift_migration_job, job.job_id, req, namespace)
 
     return {
+        "job_id": job.job_id,
         "vm_name": vm_name,
         "target_vm_name": req.target_vm_name,
         "namespace": namespace,
-        "pvc": upload_result.pvc_name,
-        "image_path": upload_result.image_path,
-        "uploadproxy_url": upload_result.uploadproxy_url,
-        "status": "submitted"
+        "status": "queued"
     }
 
 if __name__ == "__main__":

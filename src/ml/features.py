@@ -6,6 +6,7 @@ Ces features servent d'entree au modele de classification scikit-learn.
 """
 
 from typing import Dict, List, Tuple
+import os
 import numpy as np
 
 # ============================================================
@@ -129,13 +130,16 @@ def extract_features(vm_details: Dict, analysis: Dict, conversion_plan: Dict) ->
     has_windows = 1 if any(x in os_hint for x in ("windows", "win")) else 0
     has_linux = 1 if any(x in os_hint for x in ("linux", "ubuntu", "centos", "rhel", "debian")) else 0
 
-    # --- Disk size estimate (rough) ---
+    # --- Disk size estimate ---
     total_disk_gb = 0.0
     for d in disks:
         path = (d.get("path") or "")
-        # Can't get real size from metadata, use heuristic
-        # If path exists, assume 20GB average
-        if path:
+        size_gb = d.get("size_gb")
+        if path and os.path.exists(path):
+            total_disk_gb += os.path.getsize(path) / (1024 ** 3)
+        elif size_gb is not None:
+            total_disk_gb += float(size_gb)
+        elif path:
             total_disk_gb += 20.0
 
     is_multi_disk = 1 if len(disks) > 1 else 0
