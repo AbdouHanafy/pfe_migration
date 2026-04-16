@@ -18,19 +18,50 @@ spec:
           image: image-registry.openshift-image-registry.svc:5000/migration-pfe/migration-api:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8080
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: migration-api-config
           env:
             - name: PORT
-              value: "8080"
+              value: "8000"
+            - name: DATABASE_URL
+              value: "sqlite:///data/migration.db"
+            - name: DATA_DIR
+              value: "/data"
+            - name: LOG_DIR
+              value: "/logs"
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data
+            - name: logs-volume
+              mountPath: /logs
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
           readinessProbe:
             httpGet:
               path: /health
-              port: 8080
-            initialDelaySeconds: 5
+              port: 8000
+            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /health
-              port: 8080
-            initialDelaySeconds: 15
-            periodSeconds: 20
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: migration-data-pvc
+        - name: logs-volume
+          emptyDir: {}

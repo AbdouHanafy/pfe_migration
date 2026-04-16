@@ -10,6 +10,72 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# VMware guestOS code → OS type + Architecture mapping
+# ============================================================
+
+_VMWARE_OS_MAP = {
+    # Linux
+    "ubuntu": ("ubuntu", "x86"),
+    "ubuntu-64": ("Ubuntu", "x86_64"),
+    "debian": ("debian", "x86"),
+    "debian-64": ("Debian", "x86_64"),
+    "rhel": ("rhel", "x86"),
+    "rhel-64": ("RHEL", "x86_64"),
+    "centos": ("centos", "x86"),
+    "centos-64": ("CentOS", "x86_64"),
+    "fedora": ("fedora", "x86"),
+    "fedora-64": ("Fedora", "x86_64"),
+    "sles": ("sles", "x86"),
+    "sles-64": ("SLES", "x86_64"),
+    "otherlinux": ("other-linux", "x86"),
+    "otherlinux-64": ("other-linux", "x86_64"),
+    "other-64": ("linux", "x86_64"),
+    # Windows
+    "windows9": ("Windows 95", "x86"),
+    "windows9-64": ("Windows 95", "x86"),
+    "winxphome": ("Windows XP", "x86"),
+    "winxppro": ("Windows XP", "x86"),
+    "winxphome-64": ("Windows XP", "x86_64"),
+    "winxppro-64": ("Windows XP", "x86_64"),
+    "winnetbusiness": ("Windows Server 2003", "x86"),
+    "winnetenterprise": ("Windows Server 2003", "x86"),
+    "winnetstandard": ("Windows Server 2003", "x86"),
+    "winnetenterprise-64": ("Windows Server 2003", "x86_64"),
+    "winnetstandard-64": ("Windows Server 2003", "x86_64"),
+    "winlonghorn": ("Windows Server 2008", "x86"),
+    "winlonghorn-64": ("Windows Server 2008", "x86_64"),
+    "windows7": ("Windows 7", "x86"),
+    "windows7-64": ("Windows 7", "x86_64"),
+    "windows8": ("Windows 8", "x86"),
+    "windows8-64": ("Windows 8", "x86_64"),
+    "windows8server-64": ("Windows Server 2012", "x86_64"),
+    "windows9": ("Windows 10", "x86"),
+    "windows9-64": ("Windows 10", "x86_64"),
+    "win11": ("Windows 11", "x86_64"),
+    "win11srv-64": ("Windows Server 2022", "x86_64"),
+    "win12srv-64": ("Windows Server 2025", "x86_64"),
+    # Other
+    "other": ("unknown", "unknown"),
+}
+
+
+def _parse_vmware_guest_os(guest_os_code: str) -> tuple:
+    """
+    Traduit un code VMware guestOS en (os_type, os_arch).
+
+    >>> _parse_vmware_guest_os("ubuntu-64")
+    ('Ubuntu', 'x86_64')
+    >>> _parse_vmware_guest_os("windows9-64")
+    ('Windows 10', 'x86_64')
+    >>> _parse_vmware_guest_os("unknown-os")
+    ('unknown', 'unknown')
+    """
+    code = (guest_os_code or "unknown").lower().strip()
+    os_type, os_arch = _VMWARE_OS_MAP.get(code, ("unknown", "unknown"))
+    return os_type, os_arch
+
+
 class VMwareWorkstationDiscoverer:
     """Découvre et analyse les VMs VMware Workstation (.vmx)"""
 
@@ -106,11 +172,17 @@ class VMwareWorkstationDiscoverer:
                 cpus = int(vmx_data["numvcpus"])
             except ValueError:
                 cpus = 1
+
+        # --- OS detection ---
+        raw_guest_os = vmx_data.get("guestOS", "unknown")
+        os_type, os_arch = _parse_vmware_guest_os(raw_guest_os)
+
         return {
             "memory_mb": memory_mb,
             "cpus": cpus,
-            "os_type": vmx_data.get("guestOS", "unknown"),
-            "os_arch": vmx_data.get("guestOS", "unknown"),
+            "os_type": os_type,
+            "os_arch": os_arch,
+            "guestOS": raw_guest_os,
         }
 
     def _extract_disks(self, vmx_data: Dict[str, str], base_dir: Path) -> List[Dict]:
@@ -119,13 +191,18 @@ class VMwareWorkstationDiscoverer:
             if key.endswith(".fileName") and value.lower().endswith(".vmdk"):
                 path = value
                 full_path = (base_dir / path).resolve() if not Path(path).is_absolute() else Path(path)
+
+                # Extract bus type from key prefix (e.g., "scsi0:0" → "scsi")
+                bus_key = key.split(".")[0]  # e.g., "scsi0:0"
+                bus_type = bus_key.rstrip("0123456789").rstrip(":").lower()  # "scsi"
+
                 disks.append(
                     {
                         "type": "file",
                         "device": "disk",
                         "path": str(full_path),
                         "format": "vmdk",
-                        "bus": key.split(".")[0] if "." in key else "scsi",
+                        "bus": bus_type if bus_type else "scsi",
                         "driver": "vmware",
                     }
                 )
@@ -133,14 +210,28 @@ class VMwareWorkstationDiscoverer:
 
     def _extract_network(self, vmx_data: Dict[str, str]) -> List[Dict]:
         networks: List[Dict] = []
-        for key, value in vmx_data.items():
-            if key.endswith(".networkName"):
+        # Look for ethernet interfaces: ethernet0, ethernet1, ...
+        for key in vmx_data:
+            if key.startswith("ethernet") and key.endswith(".present"):
+                if vmx_data[key].lower() != "true":
+                    continue
+                idx = key.split(".")[0]  # e.g., "ethernet0"
+                address_type = vmx_data.get(f"{idx}.addressType", "")
+                mac = ""
+                if address_type.lower() == "static":
+                    mac = vmx_data.get(f"{idx}.address", "")
+                elif address_type.lower() == "generated":
+                    mac = vmx_data.get(f"{idx}.generatedAddress", "")
+                network_name = vmx_data.get(f"{idx}.connectionType",
+                                            vmx_data.get(f"{idx}.networkName", ""))
+                model = vmx_data.get(f"{idx}.virtualDev", "e1000")
+
                 networks.append(
                     {
                         "type": "network",
-                        "mac_address": vmx_data.get(key.replace("networkName", "address"), ""),
-                        "network": value,
-                        "model": vmx_data.get(key.replace("networkName", "virtualDev"), "e1000"),
+                        "mac_address": mac,
+                        "network": network_name,
+                        "model": model,
                     }
                 )
         return networks

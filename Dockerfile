@@ -1,30 +1,30 @@
 FROM python:3.11-slim
 
-WORKDIR /app
-
-# Installer les dépendances système
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     libvirt-dev \
+    qemu-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Copier les requirements
-COPY requirements.txt .
+WORKDIR /app
 
-# Installer les dépendances Python
+# Install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copier l'application
+# Copy application code
 COPY . .
 
-# Variables d'environnement
+# Environment
 ENV PYTHONPATH=/app
 ENV API_HOST=0.0.0.0
 ENV API_PORT=8000
 ENV API_DEBUG=false
 
-# Exposer le port
+# Data directory for DB and converted images
+RUN mkdir -p /app/data /app/logs
+
 EXPOSE 8000
 
-# Commande par défaut
 CMD ["python", "src/main.py", "api"]

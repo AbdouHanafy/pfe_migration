@@ -332,7 +332,7 @@ async def plan_migration(
     details = _get_vm_details(vm_name, source)
     analysis = analyze_vm(details)
     conversion_plan = build_conversion_plan(details, analysis)
-    strategy = choose_strategy(analysis, conversion_plan)
+    strategy = choose_strategy(details, analysis, conversion_plan)
     return {
         "vm_name": vm_name,
         "analysis": analysis,
@@ -350,7 +350,7 @@ async def start_migration_job(
     details = _get_vm_details(vm_name, source)
     analysis = analyze_vm(details)
     conversion_plan = build_conversion_plan(details, analysis)
-    strategy = choose_strategy(analysis, conversion_plan)
+    strategy = choose_strategy(details, analysis, conversion_plan)
     job = start_migration(details, analysis, conversion_plan, strategy)
     return job
 

@@ -19,6 +19,19 @@ const HomePage = () => {
   const [migration, setMigration] = useState(null)
   const [jobId, setJobId] = useState('')
   const [openShiftResult, setOpenShiftResult] = useState(null)
+  const [error, setError] = useState(null)
+
+  // Loading states for each action
+  const [loading, setLoading] = useState({
+    health: false,
+    discover: false,
+    analyze: false,
+    plan: false,
+    start: false,
+    status: false,
+    report: false,
+    openshift: false,
+  })
 
   const [sourceDiskPath, setSourceDiskPath] = useState('')
   const [sourceDiskFormat, setSourceDiskFormat] = useState('vmdk')
@@ -33,17 +46,33 @@ const HomePage = () => {
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
   const { logs, pushLog } = useLogger()
 
+  const setActionLoading = (key, value) => {
+    setLoading((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const handleError = (action, err) => {
+    const msg = err.message || 'Unknown error'
+    setError(`${action}: ${msg}`)
+    pushLog(`❌ ${action} failed: ${msg}`)
+  }
+
   const onHealth = async () => {
+    setError(null)
+    setActionLoading('health', true)
     try {
       const data = await api.fetchJson('/health')
       setAnalysis(data)
-      pushLog('Health OK')
+      pushLog('✅ Health OK')
     } catch (err) {
-      pushLog(`Health failed: ${err.message}`)
+      handleError('Health', err)
+    } finally {
+      setActionLoading('health', false)
     }
   }
 
   const onDiscover = async () => {
+    setError(null)
+    setActionLoading('discover', true)
     try {
       const endpoint =
         discoverySource === 'vmware-workstation'
@@ -52,78 +81,100 @@ const HomePage = () => {
       const data = await api.fetchJson(endpoint)
       setVms(data)
       setVmSource(discoverySource)
-      pushLog(`Discovered ${data.length} VMs (${discoverySource})`)
+      pushLog(`✅ Discovered ${data.length} VMs (${discoverySource})`)
     } catch (err) {
-      pushLog(`Discovery failed: ${err.message}`)
+      handleError('Discovery', err)
+    } finally {
+      setActionLoading('discover', false)
     }
   }
 
   const onAnalyze = async () => {
-    if (!vmName) return pushLog('VM name required')
+    if (!vmName) return pushLog('⚠️ VM name required')
+    setError(null)
+    setActionLoading('analyze', true)
     try {
       const data = await api.fetchJson(`/api/v1/migration/analyze/${vmName}?source=${vmSource}`, {
-        method: 'POST'
+        method: 'POST',
       })
       setAnalysis(data)
-      pushLog(`Analysis done for ${vmName}`)
+      pushLog(`✅ Analysis done for ${vmName}`)
     } catch (err) {
-      pushLog(`Analyze failed: ${err.message}`)
+      handleError('Analysis', err)
+    } finally {
+      setActionLoading('analyze', false)
     }
   }
 
   const onPlan = async () => {
-    if (!vmName) return pushLog('VM name required')
+    if (!vmName) return pushLog('⚠️ VM name required')
+    setError(null)
+    setActionLoading('plan', true)
     try {
       const data = await api.fetchJson(`/api/v1/migration/plan/${vmName}?source=${vmSource}`, {
-        method: 'POST'
+        method: 'POST',
       })
       setAnalysis(data)
-      pushLog(`Plan generated for ${vmName}`)
+      pushLog(`✅ Plan generated for ${vmName}`)
     } catch (err) {
-      pushLog(`Plan failed: ${err.message}`)
+      handleError('Plan', err)
+    } finally {
+      setActionLoading('plan', false)
     }
   }
 
   const onStart = async () => {
-    if (!vmName) return pushLog('VM name required')
+    if (!vmName) return pushLog('⚠️ VM name required')
+    setError(null)
+    setActionLoading('start', true)
     try {
       const data = await api.fetchJson(`/api/v1/migration/start/${vmName}?source=${vmSource}`, {
-        method: 'POST'
+        method: 'POST',
       })
       setMigration(data)
       setJobId(data.job_id || '')
-      pushLog(`Migration started for ${vmName}`)
+      pushLog(`✅ Migration started for ${vmName} (job: ${data.job_id})`)
     } catch (err) {
-      pushLog(`Start failed: ${err.message}`)
+      handleError('Start', err)
+    } finally {
+      setActionLoading('start', false)
     }
   }
 
   const onStatus = async () => {
-    if (!jobId) return pushLog('Job id required')
+    if (!jobId) return pushLog('⚠️ Job ID required')
+    setError(null)
+    setActionLoading('status', true)
     try {
       const data = await api.fetchJson(`/api/v1/migration/status/${jobId}`)
       setMigration(data)
-      pushLog(`Status fetched for ${jobId}`)
+      pushLog(`✅ Status: ${data.status} (${jobId})`)
     } catch (err) {
-      pushLog(`Status failed: ${err.message}`)
+      handleError('Status', err)
+    } finally {
+      setActionLoading('status', false)
     }
   }
 
   const onReport = async () => {
-    if (!jobId) return pushLog('Job id required')
+    if (!jobId) return pushLog('⚠️ Job ID required')
+    setError(null)
+    setActionLoading('report', true)
     try {
       const data = await api.fetchJson(`/api/v1/migration/report/${jobId}`)
       setMigration(data)
-      pushLog(`Report fetched for ${jobId}`)
+      pushLog(`✅ Report fetched for ${jobId}`)
     } catch (err) {
-      pushLog(`Report failed: ${err.message}`)
+      handleError('Report', err)
+    } finally {
+      setActionLoading('report', false)
     }
   }
 
   const onOpenShift = async () => {
-    if (!vmName) return pushLog('VM name required (source label)')
+    if (!vmName) return pushLog('⚠️ VM name required (source label)')
     if (!sourceDiskPath || !targetVmName) {
-      return pushLog('source_disk_path and target_vm_name are required')
+      return pushLog('⚠️ source_disk_path and target_vm_name are required')
     }
 
     const payload = {
@@ -134,20 +185,29 @@ const HomePage = () => {
       memory: memory || '2Gi',
       cpu_cores: parseInt(cpuCores, 10) || 2,
       firmware: firmware || 'bios',
-      namespace: namespace || 'vm-migration'
+      namespace: namespace || 'vm-migration',
     }
 
+    setError(null)
+    setActionLoading('openshift', true)
     try {
       const data = await api.fetchJson(`/api/v1/migration/openshift/${vmName}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       })
       setOpenShiftResult(data)
-      pushLog(`OpenShift migration submitted for ${targetVmName}`)
+      pushLog(`✅ OpenShift migration submitted for ${targetVmName}`)
     } catch (err) {
-      pushLog(`OpenShift migration failed: ${err.message}`)
+      handleError('OpenShift migration', err)
+    } finally {
+      setActionLoading('openshift', false)
     }
+  }
+
+  const btnLabel = (action) => {
+    if (loading[action]) return '⏳ Loading...'
+    return null
   }
 
   return (
@@ -166,9 +226,18 @@ const HomePage = () => {
             value={apiBase}
             onChange={(e) => setApiBase(e.target.value)}
           />
-          <Button variant="ghost" onClick={onHealth}>Health</Button>
+          <Button variant="ghost" onClick={onHealth} disabled={loading.health}>
+            {btnLabel('health') || 'Health'}
+          </Button>
         </div>
       </header>
+
+      {error && (
+        <div className="error-banner">
+          <strong>⚠️ Error:</strong> {error}
+          <button className="dismiss" onClick={() => setError(null)}>✕</button>
+        </div>
+      )}
 
       <main className="grid">
         <Card
@@ -184,11 +253,14 @@ const HomePage = () => {
                 <option value="kvm">KVM</option>
                 <option value="vmware-workstation">VMware Workstation</option>
               </select>
-              <Button onClick={onDiscover}>Discover VMs</Button>
+              <Button onClick={onDiscover} disabled={loading.discover}>
+                {btnLabel('discover') || 'Discover VMs'}
+              </Button>
             </>
           }
         >
           <div className="list">
+            {vms.length === 0 && <p className="empty">No VMs discovered yet.</p>}
             {vms.map((vm) => (
               <div
                 key={vm.uuid || vm.name}
@@ -196,6 +268,7 @@ const HomePage = () => {
                 onClick={() => {
                   setVmName(vm.name)
                   setVmSource(discoverySource)
+                  pushLog(`Selected VM: ${vm.name}`)
                 }}
               >
                 <div className="name">{vm.name}</div>
@@ -210,12 +283,16 @@ const HomePage = () => {
           actions={
             <>
               <Input
-                placeholder="vm name (e.g., ubuntu-vm)"
+                placeholder="vm name (e.g., devops)"
                 value={vmName}
                 onChange={(e) => setVmName(e.target.value)}
               />
-              <Button onClick={onAnalyze}>Analyze</Button>
-              <Button variant="ghost" onClick={onPlan}>Plan</Button>
+              <Button onClick={onAnalyze} disabled={loading.analyze}>
+                {btnLabel('analyze') || 'Analyze'}
+              </Button>
+              <Button variant="ghost" onClick={onPlan} disabled={loading.plan}>
+                {btnLabel('plan') || 'Plan'}
+              </Button>
             </>
           }
         >
@@ -226,14 +303,20 @@ const HomePage = () => {
           title="Migration"
           actions={
             <>
-              <Button onClick={onStart}>Start (Simulated)</Button>
+              <Button onClick={onStart} disabled={loading.start}>
+                {btnLabel('start') || 'Start (Simulated)'}
+              </Button>
               <Input
                 placeholder="job id"
                 value={jobId}
                 onChange={(e) => setJobId(e.target.value)}
               />
-              <Button variant="ghost" onClick={onStatus}>Status</Button>
-              <Button variant="ghost" onClick={onReport}>Report</Button>
+              <Button variant="ghost" onClick={onStatus} disabled={loading.status}>
+                {btnLabel('status') || 'Status'}
+              </Button>
+              <Button variant="ghost" onClick={onReport} disabled={loading.report}>
+                {btnLabel('report') || 'Report'}
+              </Button>
             </>
           }
         >
@@ -244,7 +327,11 @@ const HomePage = () => {
           className="wide"
           title="OpenShift Real Migration"
           hint="Uploads disk, creates VM, and starts it in OpenShift."
-          actions={<Button onClick={onOpenShift}>Migrate to OpenShift</Button>}
+          actions={
+            <Button onClick={onOpenShift} disabled={loading.openshift}>
+              {btnLabel('openshift') || 'Migrate to OpenShift'}
+            </Button>
+          }
         >
           <FieldGrid>
             <Input placeholder="/path/to/source.vmdk" value={sourceDiskPath} onChange={(e) => setSourceDiskPath(e.target.value)} />

@@ -22,12 +22,16 @@ pyyaml==6.0.1
 httpx==0.25.0
 click==8.1.7
 
+# == ML / IA ==
+scikit-learn==1.3.0
+pandas==2.1.0
+joblib==1.3.2
+numpy==1.24.0
+
 # == AUTH ==
 PyJWT==2.8.0
 passlib[bcrypt]==1.7.4
 bcrypt<4
 
 # == OPTIONAL (pour plus tard) ==
-# scikit-learn==1.3.0    # Pour l'IA
-# pandas==2.1.0          # Pour l'analyse
-# paramiko==3.4.0        # Pour SSH avancé
+# paramiko==3.4.0        # Pour SSH avance

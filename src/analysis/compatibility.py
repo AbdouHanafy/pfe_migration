@@ -20,6 +20,7 @@ def analyze_vm(vm_details: Dict) -> Dict:
     blockers: List[str] = []
     score = 100
 
+    # --- Architecture ---
     os_arch = (specs.get("os_arch") or "unknown").lower()
     if os_arch not in SUPPORTED_ARCHES:
         blockers.append(f"Architecture non supportee: {os_arch}")
@@ -29,6 +30,13 @@ def analyze_vm(vm_details: Dict) -> Dict:
             "message": f"Architecture non supportee: {os_arch}"
         })
         score -= 40
+    else:
+        # Also check if it looks like a known Linux/Windows distro
+        os_type_hint = (specs.get("os_type") or "").lower()
+        if any(x in os_type_hint for x in ("ubuntu", "debian", "rhel", "centos",
+                                            "fedora", "sles", "linux", "win")):
+            # OS is known, arch is supported → no issue
+            pass
 
     memory_mb = specs.get("memory_mb", 0) or 0
     if memory_mb < 512:
@@ -60,7 +68,9 @@ def analyze_vm(vm_details: Dict) -> Dict:
 
     for disk in disks:
         fmt = (disk.get("format") or "unknown").lower()
-        bus = (disk.get("bus") or "unknown").lower()
+        # Normalize bus: "scsi0:0" → "scsi", "sata0:0" → "sata"
+        raw_bus = (disk.get("bus") or "unknown").lower()
+        bus = raw_bus.rstrip("0123456789").rstrip(":")
         if fmt not in SUPPORTED_DISK_FORMATS:
             issues.append({
                 "code": "disk_format",

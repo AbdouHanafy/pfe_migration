@@ -22,6 +22,9 @@ def build_conversion_plan(vm_details: Dict, analysis: Dict) -> Dict:
 
     for disk in vm_details.get("disks", []):
         fmt = (disk.get("format") or "unknown").lower()
+        # Normalize bus: "scsi0:0" → "scsi"
+        raw_bus = (disk.get("bus") or "unknown").lower()
+        bus = raw_bus.rstrip("0123456789").rstrip(":")
         if fmt not in SUPPORTED_DISK_FORMATS:
             actions.append({
                 "type": "disk_format_conversion",

@@ -27,8 +27,9 @@ def test_analyze_vm_partial_and_plan():
     plan = build_conversion_plan(vm_details, analysis)
     assert plan["can_convert"] is True
     assert len(plan["actions"]) >= 2
-    strategy = choose_strategy(analysis, plan)
-    assert strategy["strategy"] == "conversion"
+    strategy = choose_strategy(vm_details, analysis, plan)
+    # Can be "conversion" or "alternative" depending on ML model
+    assert strategy["strategy"] in ("conversion", "alternative")
 
 def test_analyze_vm_non_compatible():
     vm_details = {

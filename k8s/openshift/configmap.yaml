@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: migration-api-config
+  namespace: migration-pfe
+data:
+  # API
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  API_DEBUG: "false"
+  API_CORS_ORIGINS: "*"
+  API_ALLOW_CREDENTIALS: "false"
+
+  # Auth: none | api_key | jwt
+  AUTH_MODE: "none"
+
+  # KVM
+  KVM_URI: "qemu:///system"
+
+  # VMware Workstation paths
+  VMWARE_WORKSTATION_PATHS: ""
+
+  # OpenShift / KubeVirt
+  OPENSHIFT_NAMESPACE: "vm-migration"
+  ENABLE_REAL_MIGRATION: "false"
+  OPENSHIFT_INSECURE_UPLOAD: "true"
+
+  # Migration
+  MAX_CONCURRENT_MIGRATIONS: "3"
+  DEFAULT_MIGRATION_STRATEGY: "auto"

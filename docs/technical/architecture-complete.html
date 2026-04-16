@@ -1,0 +1,504 @@
+<!DOCTYPE html><html><head><meta charset=utf-8><title>PFE Architecture</title><style>body{font-family:Segoe UI,Arial,sans-serif;max-width:900px;margin:0 auto;padding:40px 20px;color:#1a1a2e;line-height:1.7}h1{color:#16213e;border-bottom:3px solid #0f3460;padding-bottom:10px}h2{color:#0f3460;border-bottom:2px solid #e94560;padding-bottom:8px;margin-top:40px}h3{color:#533483}pre,code{background:#f4f4f4;padding:2px 6px;border-radius:4px;font-size:0.9em}pre{padding:15px;overflow-x:auto;border-radius:8px;border:1px solid #ddd}table{border-collapse:collapse;width:100%;margin:20px 0}th,td{border:1px solid #ddd;padding:10px 12px;text-align:left}th{background:#0f3460;color:white}tr:nth-child(even){background:#f8f9fa}blockquote{border-left:4px solid #e94560;padding:15px 20px;background:#fff5f5;margin:20px 0}</style></head><body><h1>Architecture Complete — Migration Intelligente vers OpenShift</h1>
+<blockquote>
+<p>PFE 2024-2025 | Compact Cluster UPI Bare Metal | cluster.ocp.pfe.lan</p>
+</blockquote>
+<hr />
+<h2>1. Vue d'ensemble</h2>
+<p><code>┌────────────────────────────────────────────────────────────────────────────┐
+│                            UTILISATEUR                                     │
+│                        Navigateur Web (Chrome/Firefox)                     │
+│                      http://localhost:5173  (React + Vite)                 │
+└─────────────────────────┬──────────────────────────────────────────────────┘
+                          │  HTTP/JSON  (Bearer Token JWT)
+                          ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                         COUCHE PRESENTATION                                │
+│                              Frontend (React 19)                           │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
+│  │Discovery │ │ Analyze  │ │  Plan    │ │ Migrate  │ │    Monitor       │ │
+│  │   Page   │ │   Page   │ │  Page    │ │  Page    │ │    Page          │ │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────────────┘ │
+│                                                                          │
+│  Composants: NavBar, Card, Button, Input, Pill, JsonBlock, FieldGrid     │
+│  Services: api.js (fetch + auth), authService.js (login/register)        │
+│  Store: AuthContext.jsx (localStorage + React Context)                   │
+└─────────────────────────┬──────────────────────────────────────────────────┘
+                          │  REST API  (FastAPI)
+                          ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                       COUCHE APPLICATION (API)                             │
+│                          Backend (FastAPI — Python 3.11)                   │
+│                          http://10.9.21.90:8000                            │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐ │
+│  │                    src/api/main.py (FastAPI)                         │ │
+│  │                                                                      │ │
+│  │  Routes:                                                             │ │
+│  │    GET    /health                                                    │ │
+│  │    POST   /api/v1/auth/login                                         │ │
+│  │    POST   /api/v1/auth/register                                      │ │
+│  │    GET    /api/v1/discovery/kvm                                      │ │
+│  │    GET    /api/v1/discovery/vmware-workstation                       │ │
+│  │    POST   /api/v1/migration/analyze/{vm_name}                        │ │
+│  │    POST   /api/v1/migration/plan/{vm_name}                           │ │
+│  │    POST   /api/v1/migration/start/{vm_name}                          │ │
+│  │    GET    /api/v1/migration/status/{job_id}                          │ │
+│  │    GET    /api/v1/migration/report/{job_id}                          │ │
+│  │    POST   /api/v1/migration/openshift/{vm_name}                      │ │
+│  └──────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  Middleware: CORS, Auth (JWT / API Key / None)                           │
+│  Base de donnees: SQLite (via SQLAlchemy)                                │
+└─────────────────────────┬──────────────────────────────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          │               │               │
+          ▼               ▼               ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│  COUCHE      │ │  COUCHE      │ │  COUCHE      │
+│  DECOUVERTE  │ │  ANALYSE     │ │  IA / ML     │
+│  (Module 1)  │ │  (Module 2)  │ │  (Module 4)  │
+└──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+       │                │                │
+       ▼                ▼                ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│  COUCHE      │ │  COUCHE      │ │  COUCHE      │
+│  CONVERSION  │ │ORCHESTRATION │ │  OPENSHIFT   │
+│  (Module 3)  │ │  (Module 5)  │ │   CLIENT     │
+└──────────────┘ └──────────────┘ └──────────────┘</code></p>
+<hr />
+<h2>2. Communication entre les couches</h2>
+<h3>2.1 Flux de donnees complet</h3>
+<p><code>┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐
+│Utilis.  │────►│Frontend │────►│  API    │────►│Modules  │────►│OpenShift│
+│         │◄────│         │◄────│(FastAPI)│◄────│Backend  │◄────│  CLI    │
+└─────────┘     └─────────┘     └─────────┘     └─────────┘     └─────────┘
+  HTTP/JSON     React/Vite     REST API       Python libs     oc/virtctl
+  Browser       localhost:5173 localhost:8000  In-process      CLI tools</code></p>
+<h3>2.2 Detail des appels par etape</h3>
+<h4>Etape 1 — Decouverte des VMs</h4>
+<p><code>Frontend                    Backend                      Hyperviseur
+   │                           │                             │
+   │  GET /api/v1/discovery/   │                             │
+   │  vmware-workstation       │                             │
+   ├──────────────────────────►│                             │
+   │                           │  Parser .vmx files          │
+   │                           ├────────────────────────────►│
+   │                           │  Lire: OS, RAM, CPU, disks  │
+   │                           │◄────────────────────────────┤
+   │  Liste de VMs (JSON)      │                             │
+   │◄──────────────────────────┤                             │</code></p>
+<h4>Etape 2 — Analyse de compatibilite</h4>
+<p><code>Frontend                    Backend                      Regles d'analyse
+   │                           │                             │
+   │  POST /api/v1/migration/  │                             │
+   │  analyze/{vm_name}        │                             │
+   ├──────────────────────────►│                             │
+   │                           │  analyze_vm(vm_details)     │
+   │                           ├────────────────────────────►│
+   │                           │  20 regles de compatibilite │
+   │                           │  Scoring 0-100              │
+   │                           │  Blockers + Warnings        │
+   │                           │◄────────────────────────────┤
+   │  Rapport JSON             │                             │
+   │  {compatibility, score,   │                             │
+   │   issues, recommendations}│                             │
+   │◄──────────────────────────┤                             │</code></p>
+<h4>Etape 3 — Plan de conversion</h4>
+<p><code>Frontend                    Backend                      Modules
+   │                           │                             │
+   │  POST /api/v1/migration/  │                             │
+   │  plan/{vm_name}           │                             │
+   ├──────────────────────────►│                             │
+   │                           │  build_conversion_plan()    │
+   │                           ├───────┐                     │
+   │                           │       │ Format VMDK→raw     │
+   │                           │       │ Bus SCSI→VirtIO     │
+   │                           │       │ Net e1000→VirtIO    │
+   │                           │◄──────┘                     │
+   │                           │                             │
+   │                           │  choose_strategy()          │
+   │                           ├───────┐                     │
+   │                           │       │ IA: 20 features     │
+   │                           │       │ RF: prediction      │
+   │                           │       │ Confiance + Probas  │
+   │                           │◄──────┘                     │
+   │                           │                             │
+   │  Plan complet (JSON)      │                             │
+   │  {analysis, plan,         │                             │
+   │   strategy, confidence,   │                             │
+   │   probabilities, reason}  │                             │
+   │◄──────────────────────────┤                             │</code></p>
+<h4>Etape 4 — Migration simulee</h4>
+<p><code>Frontend                    Backend                      Job Store
+   │                           │                             │
+   │  POST /api/v1/migration/  │                             │
+   │  start/{vm_name}          │                             │
+   ├──────────────────────────►│                             │
+   │                           │  create_job()               │
+   │                           ├────────────────────────────►│
+   │                           │  Thread: etapes simulees    │
+   │                           │  discovery→analysis→conv→   │
+   │                           │  transfer→verify            │
+   │                           │                             │
+   │  Job info (JSON)          │                             │
+   │  {job_id, vm_name,        │                             │
+   │   status, plan, steps}    │                             │
+   │◄──────────────────────────┤                             │
+   │                           │                             │
+   │  GET /status/{job_id}     │                             │
+   ├──────────────────────────►│                             │
+   │                           │  get_job()                  │
+   │                           ├────────────────────────────►│
+   │  Status (JSON)            │                             │
+   │◄──────────────────────────┤                             │</code></p>
+<h4>Etape 5 — Migration reelle (OpenShift)</h4>
+<p><code>Frontend                    Backend                      OpenShift CLI
+   │                           │                             │
+   │  POST /api/v1/migration/  │                             │
+   │  openshift/{vm_name}      │                             │
+   │  {disk_path, format,      │                             │
+   │   target_name, pvc_size}  │                             │
+   ├──────────────────────────►│                             │
+   │                           │  ensure_namespace()         │
+   │                           ├──── oc new-project ─────────►│
+   │                           │◄────────────────────────────┤
+   │                           │                             │
+   │                           │  convert_disk_if_needed()   │
+   │                           ├─ qemu-img convert ──────────►│
+   │                           │◄────────────────────────────┤
+   │                           │                             │
+   │                           │  upload_disk()              │
+   │                           ├─ virtctl image-upload ──────►│
+   │                           │  (CDI DataVolume)           │
+   │                           │◄────────────────────────────┤
+   │                           │                             │
+   │                           │  build_vm_manifest()        │
+   │                           │  apply_manifest()           │
+   │                           ├─ oc apply -f - ────────────►│
+   │                           │  (VirtualMachine CRD)       │
+   │                           │◄────────────────────────────┤
+   │  Result (JSON)            │                             │
+   │  {vm_name, namespace,     │                             │
+   │   pvc, status: submitted} │                             │
+   │◄──────────────────────────┤                             │</code></p>
+<hr />
+<h2>3. Position du module IA dans l'architecture</h2>
+<h3>Le module IA est une COUCHE INTERNE (pas separee)</h3>
+<p><code>┌──────────────────────────────────────────────────────────────────┐
+│                    BACKEND (FastAPI)                             │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  src/api/main.py  (API REST — point d'entree)              │  │
+│  │                                                            │  │
+│  │  POST /plan/{vm_name}                                      │  │
+│  │    ↓                                                       │  │
+│  │    1. discovery.get_vm_details()     ──┐                   │  │
+│  │    2. analyze_vm(vm_details)           │                   │  │
+│  │    3. build_conversion_plan()          │  Meme processus   │  │
+│  │    4. choose_strategy() ──────────────►┤  (meme thread,    │  │
+│  │         ↓                              │   meme espace      │  │
+│  │    ┌────────────────────────────┐     │   memoire)          │  │
+│  │    │ src/ml/classifier.py       │     │                     │  │
+│  │    │   ↓                        │     │                     │  │
+│  │    │   predict(vm, analysis,    │     │                     │  │
+│  │    │           conversion_plan) │     │                     │  │
+│  │    │     ↓                      │     │                     │  │
+│  │    │   model.predict_proba()    │     │                     │  │
+│  │    │   (scikit-learn, in-process)     │                     │  │
+│  │    └────────────────────────────┘     │                     │  │
+│  │         ↓                             │                     │  │
+│  │    {strategy, confidence,             │                     │  │
+│  │     probabilities, reason}            │                     │  │
+│  └───────────────────────────────────────┼─────────────────────┘  │
+└──────────────────────────────────────────┼────────────────────────┘
+                                           │
+                                    Appelle en
+                                    direct (fonction)
+                                    PAS de reseau,
+                                    PAS de service
+                                    separe</code></p>
+<h3>Pourquoi interne et pas separee ?</h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Couche Interne (notre choix)</th>
+<th>Service Separe (microservice)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Communication</strong></td>
+<td>Appel de fonction Python</td>
+<td>HTTP/gRPC entre services</td>
+</tr>
+<tr>
+<td><strong>Latence</strong></td>
+<td>~0ms (in-process)</td>
+<td>~10-50ms (reseau)</td>
+</tr>
+<tr>
+<td><strong>Deploiement</strong></td>
+<td>1 seul container</td>
+<td>2 containers minimum</td>
+</tr>
+<tr>
+<td><strong>Complexite</strong></td>
+<td>Simple</td>
+<td>Orchestration supplementaire</td>
+</tr>
+<tr>
+<td><strong>Scalabilite</strong></td>
+<td>Liee a l'API</td>
+<td>Independante</td>
+</tr>
+<tr>
+<td><strong>Pour un PFE</strong></td>
+<td>✅ Suffisant</td>
+<td>❌ Overkill</td>
+</tr>
+</tbody>
+</table>
+<h3>Si tu devais le separer (architecture production) :</h3>
+<p><code>┌─────────────┐     HTTP/JSON      ┌─────────────────┐
+│   API       │ ──────────────────►│  ML Service     │
+│  Backend    │  POST /predict     │  (scikit-learn) │
+│  (FastAPI)  │◄────────────────── │  Port 8001      │
+│  Port 8000  │  {strategy,        │                 │
+│             │   confidence}      │  model.pkl      │
+└─────────────┘                    └─────────────────┘</code></p>
+<p><strong>Mais pour ton PFE, l'approche interne est parfaitement justifiable.</strong>
+Le jury comprendra que pour un prototype, un microservice IA serait excessif.</p>
+<hr />
+<h2>4. Vue d'infrastructure complete</h2>
+<p><code>┌──────────────────────────────────────────────────────────────────┐
+│                    PC Developpeur (ton desktop)                  │
+│                                                                  │
+│  ┌─────────────────────────────┐    ┌────────────────────────┐  │
+│  │  Navigateur                 │    │  Terminal              │  │
+│  │  http://localhost:5173      │    │  SSH → bastion         │  │
+│  │  (React Frontend)           │    │  (VPN + port forward)  │  │
+│  └────────────┬────────────────┘    └────────────────────────┘  │
+│               │                                                  │
+└───────────────┼──────────────────────────────────────────────────┘
+                │
+                │ VPN (reseau 10.9.21.0/24)
+                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                    BASTION (10.9.21.90)                          │
+│  RHEL 9.6 — 2 vCPU / 4 GB RAM / 50 GB disk                      │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Services Infrastructure                                   │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌───────┐ ┌──────────┐        │  │
+│  │  │ BIND9    │ │ HAProxy  │ │nginx  │ │ Chrony   │        │  │
+│  │  │ DNS :53  │ │ LB :6443 │ │HTTP   │ │ NTP :123 │        │  │
+│  │  │          │ │ :22623   │ │:8080  │ │          │        │  │
+│  │  │          │ │ :80/:443 │ │       │ │          │        │  │
+│  │  └──────────┘ └──────────┘ └───────┘ └──────────┘        │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Application Backend (FastAPI)                             │  │
+│  │  Port 8000                                                 │  │
+│  │                                                            │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐ │  │
+│  │  │Discovery │ │ Analysis │ │ IA/ML    │ │Orchestration │ │  │
+│  │  │Module    │ │ Module   │ │ Module   │ │  Module      │ │  │
+│  │  │          │ │          │ │          │ │              │ │  │
+│  │  │ • libvirt│ │ • 20     │ │ • 20     │ │ • Job store  │ │  │
+│  │  │ • .vmx   │ │   regles │ │   feat.  │ │ • Steps      │ │  │
+│  │  │ • pyvmomi│ │ • Score  │ │ • RF     │ │ • Reports    │ │  │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘ │  │
+│  │                           ▲                                │  │
+│  │                           │ in-process                     │  │
+│  │                    ┌──────┴──────┐                         │  │
+│  │                    │ model.pkl   │                         │  │
+│  │                    │ scaler.pkl  │                         │  │
+│  │                    │ (scikit)    │                         │  │
+│  │                    └─────────────┘                         │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Donnees locales                                           │  │
+│  │  SQLite: migration.db                                      │  │
+│  │  IA: training_data.csv (20 000 VMs)                        │  │
+│  │  Modele: model.pkl, scaler.pkl                             │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           │ oc / virtctl (CLI)
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│              OPENSHIFT CLUSTER (cluster.ocp.pfe.lan)             │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │  master-1    │  │  master-2    │  │  master-3    │          │
+│  │  10.9.21.91  │  │  10.9.21.92  │  │  10.9.21.93  │          │
+│  │  CP + Worker │  │  CP + Worker │  │  CP + Worker │          │
+│  │  RHCOS 4.18  │  │  RHCOS 4.18  │  │  RHCOS 4.18  │          │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
+│         │                 │                 │                    │
+│         └─────────────────┴─────────────────┘                    │
+│                           │                                      │
+│              OVN-Kubernetes (SDN)                                │
+│                           │                                      │
+│         ┌─────────────────┴─────────────────┐                   │
+│         ▼                                   ▼                    │
+│  ┌─────────────────┐              ┌──────────────────┐          │
+│  │ CDI             │              │ KubeVirt         │          │
+│  │ (DataImporter)  │              │ (Virtualization) │          │
+│  │                 │              │                  │          │
+│  │ PVC import      │─────────────►│ VirtualMachine   │          │
+│  │ qcow2 upload    │              │ CRD              │          │
+│  └─────────────────┘              └──────────────────┘          │
+│                                                                  │
+│  Namespace: vm-migration                                         │
+│  VMs migrees: running + console VNC + monitoring                 │
+└──────────────────────────────────────────────────────────────────┘</code></p>
+<hr />
+<h2>5. Matrice des communications</h2>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Destination</th>
+<th>Protocole</th>
+<th>Port</th>
+<th>Contenu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Browser → Frontend</td>
+<td>HTTP</td>
+<td>5173</td>
+<td>React SPA (Vite dev)</td>
+<td></td>
+</tr>
+<tr>
+<td>Frontend → Backend</td>
+<td>HTTP/REST + Bearer Token</td>
+<td>8000</td>
+<td>JSON API calls</td>
+<td></td>
+</tr>
+<tr>
+<td>Backend → Hyperviseur</td>
+<td>SSH / libvirt XML / .vmx files</td>
+<td>—</td>
+<td>VM metadata extraction</td>
+<td></td>
+</tr>
+<tr>
+<td>Backend → Module IA</td>
+<td>In-process (appel fonction Python)</td>
+<td>—</td>
+<td>20 features → prediction</td>
+<td></td>
+</tr>
+<tr>
+<td>Backend → SQLite</td>
+<td>SQLAlchemy ORM</td>
+<td>—</td>
+<td>User auth, session</td>
+<td></td>
+</tr>
+<tr>
+<td>Backend → OpenShift</td>
+<td>CLI (<code>oc</code>, <code>virtctl</code>)</td>
+<td>6443</td>
+<td>Namespace, PVC, VM CRD</td>
+<td></td>
+</tr>
+<tr>
+<td>Bastion → Masters</td>
+<td>HAProxy (TCP passthrough)</td>
+<td>6443, 22623, 80, 443</td>
+<td>API, MCS, Ingress</td>
+<td></td>
+</tr>
+<tr>
+<td>Bastion → Masters</td>
+<td>nginx (HTTP)</td>
+<td>8080</td>
+<td>Fichiers Ignition</td>
+<td></td>
+</tr>
+<tr>
+<td>Bastion → Masters</td>
+<td>DNS (BIND9)</td>
+<td>53</td>
+<td>Resolution noms</td>
+<td></td>
+</tr>
+<tr>
+<td>Bastion → Masters</td>
+<td>NTP (Chrony)</td>
+<td>123 (UDP)</td>
+<td>Synchronisation temps</td>
+<td></td>
+</tr>
+<tr>
+<td>Developer → Bastion</td>
+<td>SSH (VPN)</td>
+<td>22</td>
+<td>Administration + port forwarding</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>6. Couche IA — Detail technique</h2>
+<h3>Architecture du module IA (interne au backend)</h3>
+<p><code>┌─────────────────────────────────────────────────────────────────┐
+│  src/ml/  (Module IA — Interne au backend)                      │
+│                                                                 │
+│  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐   │
+│  │  features.py  │    │  train.py     │    │ classifier.py │   │
+│  │               │    │               │    │               │   │
+│  │ • 20 features │    │ • 16 profils  │    │ • Load model  │   │
+│  │ • Extraction  │    │   VM realistes│    │ • predict()   │   │
+│  │ • Vectoriser  │    │ • 20k samples │    │ • Fallback    │   │
+│  │   les donnees │    │ • RF 200      │    │   heuristique │   │
+│  └───────┬───────┘    │   arbres      │    │               │   │
+│          │            │ • Accuracy    │    └───────┬───────┘   │
+│          │            │   99.90%      │            │           │
+│          │            └───────────────┘            │           │
+│          │                                         │           │
+│          │            ┌───────────────┐            │           │
+│          │            │  model.pkl    │            │           │
+│          │            │  scaler.pkl   │            │           │
+│          │            │  (charges au  │            │           │
+│          │            │   demarrage)  │            │           │
+│          │            └───────────────┘            │           │
+│          │                                         │           │
+│          └─────────────────────────────────────────┘           │
+│                              │                                 │
+│                              ▼                                 │
+│                    strategy.py (wrapper)                       │
+│                    choose_strategy()                           │
+│                    → {strategy, confidence,                    │
+│                       probabilities, reason}                   │
+└─────────────────────────────────────────────────────────────────┘</code></p>
+<h3>Justification pour le jury</h3>
+<blockquote>
+<p><strong>Question possible du jury</strong> : <em>"Pourquoi l'IA n'est pas un microservice separe ?"</em></p>
+<p><strong>Reponse</strong> : <em>"Dans une architecture de production a grande echelle, on pourrait
+isoler le module IA dans un microservice dedie avec sa propre API et sa propre
+scalabilite. Cependant, pour ce PFE, l'IA est integree directement dans le backend
+car :</em></p>
+<ol>
+<li><em>Les predictions sont instantanees (~1ms) — pas de besoin de scalabilite independante</em></li>
+<li><em>Le modele est charge en memoire au demarrage — pas de latence reseau</em></li>
+<li><em>L'IA est appelee uniquement pendant la phase de planification — pas en temps reel</em></li>
+<li><em>Un seul container suffit pour le prototype — simplifie le deploiement</em></li>
+</ol>
+<p><em>Cette approche est standard pour les applications ML de taille moyenne. Des
+entreprises comme Netflix et Spotify utilisent des modeles in-process dans leurs
+services pour les memes raisons."</em></p>
+</blockquote>
+<hr />
+<p><em>PFE 2024-2025 — Migration Intelligente de VMs vers OpenShift</em>
+<em>Compact Cluster UPI Bare Metal — cluster.ocp.pfe.lan</em></p></body></html>

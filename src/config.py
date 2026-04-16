@@ -33,7 +33,7 @@ class Config:
 
     API_CORS_ORIGINS = _parse_csv_env.__func__(
         "API_CORS_ORIGINS",
-        ["http://localhost:8000", "http://localhost:3000"]
+        ["http://localhost:8000", "http://localhost:3000", "http://localhost:5173"]
     )
     
     # KVM
