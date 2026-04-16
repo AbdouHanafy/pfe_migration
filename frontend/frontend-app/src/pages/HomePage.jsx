@@ -161,9 +161,23 @@ const HomePage = () => {
     setError(null)
     setActionLoading('analyze', true)
     try {
-      const data = await api.fetchJson(`/api/v1/migration/analyze/${vmName}?source=${vmSource}`, {
-        method: 'POST',
-      })
+      let data
+      if (diskFiles.length > 0) {
+        const formData = new FormData()
+        formData.append('vm_name', vmName)
+        diskFiles.forEach((file) => {
+          formData.append('bundle_files', file)
+        })
+        data = await api.fetchJson('/api/v1/migration/analyze-upload', {
+          method: 'POST',
+          body: formData,
+        })
+        setVmSource('uploaded-vmware-workstation')
+      } else {
+        data = await api.fetchJson(`/api/v1/migration/analyze/${vmName}?source=${vmSource}`, {
+          method: 'POST',
+        })
+      }
       setAnalysis(data)
       pushLog(`Analysis done for ${vmName}`)
     } catch (err) {
@@ -178,9 +192,23 @@ const HomePage = () => {
     setError(null)
     setActionLoading('plan', true)
     try {
-      const data = await api.fetchJson(`/api/v1/migration/plan/${vmName}?source=${vmSource}`, {
-        method: 'POST',
-      })
+      let data
+      if (diskFiles.length > 0) {
+        const formData = new FormData()
+        formData.append('vm_name', vmName)
+        diskFiles.forEach((file) => {
+          formData.append('bundle_files', file)
+        })
+        data = await api.fetchJson('/api/v1/migration/plan-upload', {
+          method: 'POST',
+          body: formData,
+        })
+        setVmSource('uploaded-vmware-workstation')
+      } else {
+        data = await api.fetchJson(`/api/v1/migration/plan/${vmName}?source=${vmSource}`, {
+          method: 'POST',
+        })
+      }
       setAnalysis(data)
       pushLog(`Plan generated for ${vmName}`)
     } catch (err) {
@@ -440,7 +468,7 @@ const HomePage = () => {
             <Input
               type="file"
               multiple
-              accept=".vmdk,.qcow2,.img,.raw"
+              accept=".vmx,.vmdk,.qcow2,.img,.raw"
               onChange={(e) => {
                 const files = Array.from(e.target.files || [])
                 setDiskFiles(files)

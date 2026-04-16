@@ -169,6 +169,25 @@ def _sanitize_filename(filename: str) -> str:
     return safe_name or "disk.img"
 
 
+def _persist_uploaded_bundle(uploads: List[UploadFile], target_vm_name: str) -> tuple[Path, List[str]]:
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    upload_dir = Path(config.DATA_DIR) / "uploads" / f"{target_vm_name}-{uuid4().hex[:8]}"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_names: List[str] = []
+    for upload in uploads:
+        safe_name = _sanitize_filename(upload.filename or f"{target_vm_name}.img")
+        disk_path = upload_dir / safe_name
+        try:
+            with disk_path.open("wb") as buffer:
+                shutil.copyfileobj(upload.file, buffer, length=1024 * 1024)
+        finally:
+            upload.file.close()
+        saved_names.append(safe_name)
+
+    return upload_dir, saved_names
+
+
 def _select_primary_disk_path(upload_dir: Path, filenames: List[str]) -> Path:
     preferred = []
     split_pattern = "-s"
@@ -197,24 +216,45 @@ def _select_primary_disk_path(upload_dir: Path, filenames: List[str]) -> Path:
 
 
 def _persist_uploaded_disks(uploads: List[UploadFile], target_vm_name: str) -> tuple[str, str, List[str]]:
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-    upload_dir = Path(config.DATA_DIR) / "uploads" / f"{target_vm_name}-{uuid4().hex[:8]}"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    saved_names: List[str] = []
-    for upload in uploads:
-        safe_name = _sanitize_filename(upload.filename or f"{target_vm_name}.img")
-        disk_path = upload_dir / safe_name
-        try:
-            with disk_path.open("wb") as buffer:
-                shutil.copyfileobj(upload.file, buffer, length=1024 * 1024)
-        finally:
-            upload.file.close()
-        saved_names.append(safe_name)
-
+    upload_dir, saved_names = _persist_uploaded_bundle(uploads, target_vm_name)
     primary_disk_path = _select_primary_disk_path(upload_dir, saved_names)
     detected_format = primary_disk_path.suffix.lower().lstrip(".") or "raw"
     return str(primary_disk_path), detected_format, saved_names
+
+
+def _select_primary_vmx_path(upload_dir: Path, filenames: List[str]) -> Path:
+    vmx_candidates = []
+    for name in filenames:
+        path = upload_dir / name
+        if path.suffix.lower() == ".vmx":
+            vmx_candidates.append(path)
+
+    if not vmx_candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ajoutez le fichier .vmx avec les disques pour analyser une VM locale VMware."
+        )
+
+    vmx_candidates.sort(key=lambda item: len(item.name))
+    return vmx_candidates[0]
+
+
+def _build_uploaded_vmware_details(upload_dir: Path, filenames: List[str]) -> Dict:
+    vmx_path = _select_primary_vmx_path(upload_dir, filenames)
+    vmx_data = vmware_ws_discoverer._parse_vmx(vmx_path)
+    vm_name = vmx_data.get("displayName") or vmx_path.stem
+
+    return {
+        "name": vm_name,
+        "uuid": vmx_data.get("uuid.bios") or vmx_data.get("uuid.location") or "",
+        "state": "uploaded",
+        "hypervisor": "vmware-workstation",
+        "specs": vmware_ws_discoverer._extract_specs(vmx_data),
+        "disks": vmware_ws_discoverer._extract_disks(vmx_data, vmx_path.parent),
+        "network": vmware_ws_discoverer._extract_network(vmx_data),
+        "vmx_path": str(vmx_path),
+        "uploaded_files": filenames,
+    }
 
 
 def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, namespace: str) -> None:
@@ -288,7 +328,9 @@ async def root(_: None = Depends(_require_auth)):
             "discovery": "/api/v1/discovery/kvm",
             "discovery_vmware_workstation": "/api/v1/discovery/vmware-workstation",
             "migration_analyze": "/api/v1/migration/analyze/{vm_name}",
+            "migration_analyze_upload": "/api/v1/migration/analyze-upload",
             "migration_plan": "/api/v1/migration/plan/{vm_name}",
+            "migration_plan_upload": "/api/v1/migration/plan-upload",
             "migration_start": "/api/v1/migration/start/{vm_name}",
             "migration_status": "/api/v1/migration/status/{job_id}",
             "migration_jobs": "/api/v1/migration/jobs",
@@ -438,6 +480,60 @@ async def plan_migration(
     strategy = choose_strategy(details, analysis, conversion_plan)
     return {
         "vm_name": vm_name,
+        "analysis": analysis,
+        "conversion_plan": conversion_plan,
+        "strategy": strategy
+    }
+
+
+@app.post("/api/v1/migration/analyze-upload")
+async def analyze_uploaded_vm_for_migration(
+    vm_name: str = Form(...),
+    bundle_files: List[UploadFile] = File(...),
+    _: None = Depends(_require_auth)
+):
+    """Analyse une VM VMware locale envoyee depuis le frontend."""
+    valid_files = [upload for upload in bundle_files if upload and upload.filename]
+    if not valid_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucun fichier fourni pour l'analyse."
+        )
+
+    upload_dir, saved_names = _persist_uploaded_bundle(valid_files, vm_name)
+    details = _build_uploaded_vmware_details(upload_dir, saved_names)
+    analysis = analyze_vm(details)
+    return {
+        "vm_name": details.get("name", vm_name),
+        "source": "uploaded-vmware-workstation",
+        "details": details,
+        "analysis": analysis
+    }
+
+
+@app.post("/api/v1/migration/plan-upload")
+async def plan_uploaded_vm_migration(
+    vm_name: str = Form(...),
+    bundle_files: List[UploadFile] = File(...),
+    _: None = Depends(_require_auth)
+):
+    """Prepare un plan de migration pour une VM VMware locale envoyee depuis le frontend."""
+    valid_files = [upload for upload in bundle_files if upload and upload.filename]
+    if not valid_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucun fichier fourni pour la planification."
+        )
+
+    upload_dir, saved_names = _persist_uploaded_bundle(valid_files, vm_name)
+    details = _build_uploaded_vmware_details(upload_dir, saved_names)
+    analysis = analyze_vm(details)
+    conversion_plan = build_conversion_plan(details, analysis)
+    strategy = choose_strategy(details, analysis, conversion_plan)
+    return {
+        "vm_name": details.get("name", vm_name),
+        "source": "uploaded-vmware-workstation",
+        "details": details,
         "analysis": analysis,
         "conversion_plan": conversion_plan,
         "strategy": strategy
