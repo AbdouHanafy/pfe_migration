@@ -2,7 +2,12 @@
 API principale pour le système de migration
 """
 
-from fastapi import FastAPI, HTTPException, status, Depends, Header, Query, BackgroundTasks
+import os
+import shutil
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, status, Depends, Header, Query, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Optional
 import logging
@@ -159,6 +164,29 @@ class OpenShiftMigrationRequest(BaseModel):
     namespace: Optional[str] = Field(None, description="Namespace OpenShift")
 
 
+def _sanitize_filename(filename: str) -> str:
+    safe_name = Path(filename or "disk.img").name.strip()
+    return safe_name or "disk.img"
+
+
+def _persist_uploaded_disk(upload: UploadFile, target_vm_name: str) -> tuple[str, str]:
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    upload_dir = Path(config.DATA_DIR) / "uploads" / f"{target_vm_name}-{uuid4().hex[:8]}"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _sanitize_filename(upload.filename or f"{target_vm_name}.img")
+    disk_path = upload_dir / safe_name
+
+    try:
+        with disk_path.open("wb") as buffer:
+            shutil.copyfileobj(upload.file, buffer, length=1024 * 1024)
+    finally:
+        upload.file.close()
+
+    detected_format = disk_path.suffix.lower().lstrip(".") or "raw"
+    return str(disk_path), detected_format
+
+
 def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, namespace: str) -> None:
     """Execute la migration OpenShift hors du cycle de requete HTTP."""
     try:
@@ -235,7 +263,8 @@ async def root(_: None = Depends(_require_auth)):
             "migration_status": "/api/v1/migration/status/{job_id}",
             "migration_jobs": "/api/v1/migration/jobs",
             "migration_report": "/api/v1/migration/report/{job_id}",
-            "migration_openshift": "/api/v1/migration/openshift/{vm_name}"
+            "migration_openshift": "/api/v1/migration/openshift/{vm_name}",
+            "migration_openshift_upload": "/api/v1/migration/openshift-upload/{vm_name}"
         }
     }
 
@@ -476,6 +505,73 @@ async def migrate_to_openshift(
         "vm_name": vm_name,
         "target_vm_name": req.target_vm_name,
         "namespace": namespace,
+        "status": "queued"
+    }
+
+
+@app.post("/api/v1/migration/openshift-upload/{vm_name}")
+async def migrate_uploaded_disk_to_openshift(
+    vm_name: str,
+    background_tasks: BackgroundTasks,
+    disk_file: UploadFile = File(...),
+    source_disk_format: str = Form(""),
+    target_vm_name: str = Form(...),
+    pvc_size: str = Form("20Gi"),
+    memory: str = Form("2Gi"),
+    cpu_cores: int = Form(2),
+    firmware: str = Form("bios"),
+    namespace: str = Form(""),
+    _: None = Depends(_require_auth)
+):
+    """
+    Migration reelle vers OpenShift avec upload du disque depuis le frontend.
+    """
+    if not config.ENABLE_REAL_MIGRATION:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ENABLE_REAL_MIGRATION=false. Activez la migration reelle via la config."
+        )
+
+    if not disk_file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucun fichier disque fourni."
+        )
+
+    stored_path, detected_format = _persist_uploaded_disk(disk_file, target_vm_name)
+    effective_format = (source_disk_format or detected_format).lower()
+    effective_namespace = namespace or config.OPENSHIFT_NAMESPACE
+
+    req = OpenShiftMigrationRequest(
+        source_disk_path=stored_path,
+        source_disk_format=effective_format,
+        target_vm_name=target_vm_name,
+        pvc_size=pvc_size,
+        memory=memory,
+        cpu_cores=cpu_cores,
+        firmware=firmware,
+        namespace=effective_namespace
+    )
+
+    plan = {
+        "strategy": {"strategy": "openshift-upload"},
+        "target_vm_name": target_vm_name,
+        "namespace": effective_namespace,
+        "source_disk_path": stored_path,
+        "source_disk_format": effective_format,
+        "uploaded_filename": disk_file.filename
+    }
+    job = job_store.create_job(vm_name, plan)
+    background_tasks.add_task(_run_openshift_migration_job, job.job_id, req, effective_namespace)
+
+    return {
+        "job_id": job.job_id,
+        "vm_name": vm_name,
+        "target_vm_name": target_vm_name,
+        "namespace": effective_namespace,
+        "source_disk_path": stored_path,
+        "source_disk_format": effective_format,
+        "uploaded_filename": disk_file.filename,
         "status": "queued"
     }
 

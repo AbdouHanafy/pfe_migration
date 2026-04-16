@@ -9,6 +9,23 @@ import JsonBlock from '../components/JsonBlock'
 import Pill from '../components/Pill'
 import FieldGrid from '../components/FieldGrid'
 
+const formatBytes = (value) => {
+  if (!value) return '0 B'
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = value
+  let unitIndex = 0
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+const fileStem = (filename) => (filename || '').replace(/\.[^.]+$/, '')
+
 const HomePage = () => {
   const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE || 'http://localhost:8000')
   const [vms, setVms] = useState([])
@@ -20,8 +37,8 @@ const HomePage = () => {
   const [jobId, setJobId] = useState('')
   const [openShiftResult, setOpenShiftResult] = useState(null)
   const [error, setError] = useState(null)
+  const [diskFile, setDiskFile] = useState(null)
 
-  // Loading states for each action
   const [loading, setLoading] = useState({
     health: false,
     discover: false,
@@ -75,7 +92,7 @@ const HomePage = () => {
   const handleError = (action, err) => {
     const msg = err.message || 'Unknown error'
     setError(`${action}: ${msg}`)
-    pushLog(`❌ ${action} failed: ${msg}`)
+    pushLog(`X ${action} failed: ${msg}`)
   }
 
   const onHealth = async () => {
@@ -84,7 +101,7 @@ const HomePage = () => {
     try {
       const data = await api.fetchJson('/health')
       setAnalysis(data)
-      pushLog('✅ Health OK')
+      pushLog('Health OK')
     } catch (err) {
       handleError('Health', err)
     } finally {
@@ -103,7 +120,7 @@ const HomePage = () => {
       const data = await api.fetchJson(endpoint)
       setVms(data)
       setVmSource(discoverySource)
-      pushLog(`✅ Discovered ${data.length} VMs (${discoverySource})`)
+      pushLog(`Discovered ${data.length} VMs (${discoverySource})`)
     } catch (err) {
       handleError('Discovery', err)
     } finally {
@@ -112,7 +129,7 @@ const HomePage = () => {
   }
 
   const onAnalyze = async () => {
-    if (!vmName) return pushLog('⚠️ VM name required')
+    if (!vmName) return pushLog('VM name required')
     setError(null)
     setActionLoading('analyze', true)
     try {
@@ -120,7 +137,7 @@ const HomePage = () => {
         method: 'POST',
       })
       setAnalysis(data)
-      pushLog(`✅ Analysis done for ${vmName}`)
+      pushLog(`Analysis done for ${vmName}`)
     } catch (err) {
       handleError('Analysis', err)
     } finally {
@@ -129,7 +146,7 @@ const HomePage = () => {
   }
 
   const onPlan = async () => {
-    if (!vmName) return pushLog('⚠️ VM name required')
+    if (!vmName) return pushLog('VM name required')
     setError(null)
     setActionLoading('plan', true)
     try {
@@ -137,7 +154,7 @@ const HomePage = () => {
         method: 'POST',
       })
       setAnalysis(data)
-      pushLog(`✅ Plan generated for ${vmName}`)
+      pushLog(`Plan generated for ${vmName}`)
     } catch (err) {
       handleError('Plan', err)
     } finally {
@@ -146,7 +163,7 @@ const HomePage = () => {
   }
 
   const onStart = async () => {
-    if (!vmName) return pushLog('⚠️ VM name required')
+    if (!vmName) return pushLog('VM name required')
     setError(null)
     setActionLoading('start', true)
     try {
@@ -155,7 +172,7 @@ const HomePage = () => {
       })
       setMigration(data)
       setJobId(data.job_id || '')
-      pushLog(`✅ Migration started for ${vmName} (job: ${data.job_id})`)
+      pushLog(`Migration started for ${vmName} (job: ${data.job_id})`)
     } catch (err) {
       handleError('Start', err)
     } finally {
@@ -164,13 +181,13 @@ const HomePage = () => {
   }
 
   const onStatus = async () => {
-    if (!jobId) return pushLog('⚠️ Job ID required')
+    if (!jobId) return pushLog('Job ID required')
     setError(null)
     setActionLoading('status', true)
     try {
       const data = await api.fetchJson(`/api/v1/migration/status/${jobId}`)
       setMigration(data)
-      pushLog(`✅ Status: ${data.status} (${jobId})`)
+      pushLog(`Status: ${data.status} (${jobId})`)
     } catch (err) {
       handleError('Status', err)
     } finally {
@@ -179,13 +196,13 @@ const HomePage = () => {
   }
 
   const onReport = async () => {
-    if (!jobId) return pushLog('⚠️ Job ID required')
+    if (!jobId) return pushLog('Job ID required')
     setError(null)
     setActionLoading('report', true)
     try {
       const data = await api.fetchJson(`/api/v1/migration/report/${jobId}`)
       setMigration(data)
-      pushLog(`✅ Report fetched for ${jobId}`)
+      pushLog(`Report fetched for ${jobId}`)
     } catch (err) {
       handleError('Report', err)
     } finally {
@@ -194,34 +211,55 @@ const HomePage = () => {
   }
 
   const onOpenShift = async () => {
-    if (!vmName) return pushLog('⚠️ VM name required (source label)')
-    if (!sourceDiskPath || !targetVmName) {
-      return pushLog('⚠️ source_disk_path and target_vm_name are required')
-    }
-
-    const payload = {
-      source_disk_path: sourceDiskPath,
-      source_disk_format: sourceDiskFormat || 'vmdk',
-      target_vm_name: targetVmName,
-      pvc_size: pvcSize || '20Gi',
-      memory: memory || '2Gi',
-      cpu_cores: parseInt(cpuCores, 10) || 2,
-      firmware: firmware || 'bios',
-      namespace: namespace || 'vm-migration',
+    if (!vmName) return pushLog('VM name required (source label)')
+    if (!targetVmName) return pushLog('Target VM name is required')
+    if (!diskFile && !sourceDiskPath) {
+      return pushLog('Select a local disk file or enter a bastion disk path')
     }
 
     setError(null)
     setActionLoading('openshift', true)
     try {
-      const data = await api.fetchJson(`/api/v1/migration/openshift/${vmName}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
+      let data
+
+      if (diskFile) {
+        const formData = new FormData()
+        formData.append('disk_file', diskFile)
+        formData.append('source_disk_format', sourceDiskFormat || 'vmdk')
+        formData.append('target_vm_name', targetVmName)
+        formData.append('pvc_size', pvcSize || '20Gi')
+        formData.append('memory', memory || '2Gi')
+        formData.append('cpu_cores', `${parseInt(cpuCores, 10) || 2}`)
+        formData.append('firmware', firmware || 'bios')
+        formData.append('namespace', namespace || 'vm-migration')
+
+        data = await api.fetchJson(`/api/v1/migration/openshift-upload/${vmName}`, {
+          method: 'POST',
+          body: formData,
+        })
+      } else {
+        const payload = {
+          source_disk_path: sourceDiskPath,
+          source_disk_format: sourceDiskFormat || 'vmdk',
+          target_vm_name: targetVmName,
+          pvc_size: pvcSize || '20Gi',
+          memory: memory || '2Gi',
+          cpu_cores: parseInt(cpuCores, 10) || 2,
+          firmware: firmware || 'bios',
+          namespace: namespace || 'vm-migration',
+        }
+
+        data = await api.fetchJson(`/api/v1/migration/openshift/${vmName}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+      }
+
       setOpenShiftResult(data)
       setJobId(data.job_id || '')
       setMigration(data.job_id ? { job_id: data.job_id, status: data.status } : null)
-      pushLog(`✅ OpenShift migration submitted for ${targetVmName}`)
+      pushLog(`OpenShift migration submitted for ${targetVmName}`)
     } catch (err) {
       handleError('OpenShift migration', err)
     } finally {
@@ -230,7 +268,7 @@ const HomePage = () => {
   }
 
   const btnLabel = (action) => {
-    if (loading[action]) return '⏳ Loading...'
+    if (loading[action]) return 'Loading...'
     return null
   }
 
@@ -258,15 +296,15 @@ const HomePage = () => {
 
       {error && (
         <div className="error-banner">
-          <strong>⚠️ Error:</strong> {error}
-          <button className="dismiss" onClick={() => setError(null)}>✕</button>
+          <strong>Error:</strong> {error}
+          <button className="dismiss" onClick={() => setError(null)}>x</button>
         </div>
       )}
 
       <main className="grid">
         <Card
           title="Discovery"
-          hint="List VMs from source hypervisor."
+          hint="Lists VMs visible from the backend host."
           actions={
             <>
               <select
@@ -292,6 +330,7 @@ const HomePage = () => {
                 onClick={() => {
                   setVmName(vm.name)
                   setVmSource(discoverySource)
+                  setTargetVmName((current) => current || vm.name)
                   pushLog(`Selected VM: ${vm.name}`)
                 }}
               >
@@ -303,11 +342,11 @@ const HomePage = () => {
         </Card>
 
         <Card
-          title="Analyze & Plan"
+          title="Analyze And Plan"
           actions={
             <>
               <Input
-                placeholder="vm name (e.g., devops)"
+                placeholder="vm name (for example: devops)"
                 value={vmName}
                 onChange={(e) => setVmName(e.target.value)}
               />
@@ -350,7 +389,7 @@ const HomePage = () => {
         <Card
           className="wide"
           title="OpenShift Real Migration"
-          hint="Uploads disk, creates VM, and starts it in OpenShift."
+          hint="Upload a local disk from your browser or use a disk path that already exists on the bastion."
           actions={
             <Button onClick={onOpenShift} disabled={loading.openshift}>
               {btnLabel('openshift') || 'Migrate to OpenShift'}
@@ -358,7 +397,28 @@ const HomePage = () => {
           }
         >
           <FieldGrid>
-            <Input placeholder="/path/to/source.vmdk" value={sourceDiskPath} onChange={(e) => setSourceDiskPath(e.target.value)} />
+            <Input
+              type="file"
+              accept=".vmdk,.qcow2,.img,.raw"
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null
+                setDiskFile(file)
+
+                if (!file) return
+
+                const inferredName = fileStem(file.name)
+                const inferredFormat = file.name.split('.').pop()?.toLowerCase() || 'vmdk'
+
+                setVmName((current) => current || inferredName)
+                setTargetVmName((current) => current || inferredName)
+                setSourceDiskFormat(inferredFormat)
+              }}
+            />
+            <Input
+              placeholder="/path/on/bastion/source.vmdk"
+              value={sourceDiskPath}
+              onChange={(e) => setSourceDiskPath(e.target.value)}
+            />
             <Input placeholder="vmdk" value={sourceDiskFormat} onChange={(e) => setSourceDiskFormat(e.target.value)} />
             <Input placeholder="target vm name" value={targetVmName} onChange={(e) => setTargetVmName(e.target.value)} />
             <Input placeholder="20Gi" value={pvcSize} onChange={(e) => setPvcSize(e.target.value)} />
@@ -367,6 +427,15 @@ const HomePage = () => {
             <Input placeholder="bios" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
             <Input placeholder="vm-migration" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
           </FieldGrid>
+          {diskFile ? (
+            <p className="hint">
+              Local file selected: <strong>{diskFile.name}</strong> ({formatBytes(diskFile.size)})
+            </p>
+          ) : (
+            <p className="hint">
+              No local file selected. The migration will use the bastion disk path field if you submit now.
+            </p>
+          )}
           <JsonBlock data={openShiftResult} />
         </Card>
 
