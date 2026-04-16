@@ -1,91 +1,155 @@
-# pfe_migration
+﻿# PFE Migration Intelligente de VMs vers OpenShift
 
-Plateforme PFE pour l'analyse de compatibilite, la planification et l'orchestration (simulation) de migration de VMs vers OpenShift Virtualization.
+Projet de fin d'études visant à automatiser la migration de machines virtuelles depuis des environnements VMware Workstation et KVM/libvirt vers **OpenShift Virtualization** (KubeVirt + CDI).
 
-## Fonctionnalites
+## Objectif
 
-- Decouverte des VMs (KVM/libvirt) et extraction des metadonnees.
-- Analyse de compatibilite avec score et recommandations.
-- Plan de conversion (formats disque, bus, reseau).
-- Selection de strategie de migration (directe, conversion, alternative).
-- Orchestration et suivi de jobs (simulation) + reporting via API.
-- API REST (FastAPI) + frontend React.
-
-## Architecture technique (resume)
-
-Composants principaux (voir `docs/technical/architecture.md`) :
-- `src/discovery` : decouverte des VMs (KVM/libvirt).
-- `src/analysis` : regles de compatibilite + scoring.
-- `src/conversion` : generation du plan de conversion.
-- `src/migration` : selection de strategie + orchestration.
-- `src/monitoring` : suivi de jobs et reporting.
-- `src/api` : API REST (FastAPI).
-
-Flux de donnees (haut niveau) :
-1. Decouverte des VMs.
-2. Analyse de compatibilite.
-3. Plan de conversion.
-4. Choix de strategie.
-5. Orchestration et suivi.
-6. Rapport final.
-
-## Stack & versions
-
-Backend (Python) :
-- Python 3.11 (Dockerfile)
-- fastapi 0.104.0, uvicorn 0.24.0, pydantic 2.5.0
-- sqlalchemy 2.0.0, alembic 1.12.0, psycopg2-binary 2.9.9
-- kubernetes 28.1.0, pyvmomi 8.0.3.0.1
-
-Frontend :
-- react ^19.2.0, react-dom ^19.2.0, react-router-dom ^7.13.0
-- vite ^7.2.4, eslint ^9.39.1
-
-Infra / deploy :
-- Docker (image Python 3.11)
-- Manifests OpenShift dans `k8s/openshift/`
+Fournir une plateforme complète pour :
+- découvrir et analyser des VMs existantes
+- évaluer la compatibilité avec OpenShift
+- générer un plan de conversion technique
+- proposer une stratégie de migration avec un moteur IA
+- orchestrer une migration simulée et préparer le déploiement réel sur OpenShift
 
 ## Structure du projet
 
-- `src/` : code backend
-- `frontend/frontend-app/` : frontend React
-- `docs/` : documentation (architecture, API, usage, avancement)
-- `k8s/openshift/` : manifests OpenShift
-- `tests/` : tests unitaires / integration
+- `src/` : backend Python
+  - `src/api/` : API FastAPI
+  - `src/discovery/` : découverte de VMs KVM et VMware Workstation
+  - `src/analysis/` : règles de compatibilité et scoring OpenShift
+  - `src/conversion/` : génération de plan de conversion de disques et bus
+  - `src/ml/` : génération de dataset, entraînement et classification IA
+  - `src/migration/` : choix de stratégie et orchestration de jobs
+  - `src/monitoring/` : stockage et suivi des jobs
+  - `src/openshift/` : intégration basique avec OpenShift via CLI
+  - `src/database/` : modèles SQLAlchemy et sessions
+  - `src/config.py` : configuration globale
+  - `src/main.py` : point d'entrée CLI
+- `frontend/frontend-app/` : application React + Vite
+- `k8s/openshift/` : manifests OpenShift (namespace, PVC, deployment, service, route)
+- `docs/` : documentation, architecture et configuration VPN/SSH
+- `tests/` : tests unitaires et d'intégration
+- `train_model.py` : script d'entraînement IA
+- `test_real_vm.py` : script de test sur VM réelle
+- `Dockerfile` : image backend Python
+- `requirements.txt` : dépendances Python
 
-## Demarrage rapide (API)
+## Fonctionnalités principales
 
-```bash
-pip install -r requirements.txt
+- Découverte de VMs KVM et VMware Workstation
+- Analyse de compatibilité OpenShift avec scoring et règles métier
+- Plan de conversion de disques et bus réseau
+- Moteur IA local (Random Forest) pour recommander la stratégie de migration
+- Orchestration de jobs de migration simulée
+- API REST avec authenticaton et documentation Swagger
+- Frontend React pour interface utilisateur
+- Manifests OpenShift prêts à déployer
+
+## Installation backend
+
+1. Créer un environnement virtuel Python 3.11+ :
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+2. Installer les dépendances :
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+## Lancer le backend
+
+```powershell
 python src/main.py api
 ```
 
-Documentation interactive : `http://localhost:8000/docs`
+API disponible sur `http://localhost:8000`
+Docs Swagger : `http://localhost:8000/docs`
 
-Voir `docs/user/usage.md` pour un flux complet.
+## Lancer le frontend
 
-## Frontend
-
-```bash
+```powershell
 cd frontend/frontend-app
 npm install
 npm run dev
 ```
 
-## API (extrait)
+Interface frontend : `http://localhost:5173`
 
-- `GET /health`
-- `GET /api/v1/discovery/kvm`
-- `POST /api/v1/migration/analyze/{vm_name}`
-- `POST /api/v1/migration/plan/{vm_name}`
-- `POST /api/v1/migration/start/{vm_name}`
-- `GET /api/v1/migration/status/{job_id}`
-- `GET /api/v1/migration/report/{job_id}`
+## Utilisation rapide
 
-Details : `docs/api/README.md`
+- `python src/main.py discovery` : tester la découverte KVM
+- `python src/main.py tests` : exécuter les tests Python
+- `python train_model.py` : entraîner le modèle IA
+- `python test_real_vm.py` : tester le workflow avec une VM réelle
 
-## Etat du projet (au 2026-02-03)
+## API disponibles
 
-- Avancement global estime : 65-70% (voir `docs/progress.md`)
-- Migration reelle vers OpenShift Virtualization non integree (simulation)
-- IA non integree (regles heuristiques uniquement)
+- `GET /` : informations de service
+- `GET /health` : état de santé
+- `POST /api/v1/auth/register` : créer un compte
+- `POST /api/v1/auth/login` : authentifier un utilisateur
+- `GET /api/v1/discovery/kvm` : lister les VMs KVM
+- `GET /api/v1/discovery/kvm/{vm}` : détail VM KVM
+- `GET /api/v1/discovery/vmware-workstation` : lister les VMs VMware Workstation
+- `GET /api/v1/discovery/vmware-workstation/{vm}` : détail VM VMware
+- `POST /api/v1/migration/analyze/{vm}` : analyser une VM
+- `POST /api/v1/migration/plan/{vm}` : générer le plan de migration
+- `POST /api/v1/migration/start/{vm}` : démarrer une migration simulée
+- `GET /api/v1/migration/status/{job}` : statut d'un job
+- `GET /api/v1/migration/jobs` : liste des jobs
+- `GET /api/v1/migration/report/{job}` : rapport d'un job
+- `POST /api/v1/migration/openshift/{vm}` : lancer la migration OpenShift
+
+## IA et machine learning
+
+- Dataset synthétique de 20 000 profils de VMs
+- 20 features extraites pour chaque VM
+- Random Forest Classifier entraîné
+- Stratégies produites : `direct`, `conversion`, `alternative`
+- Modèle intégré directement dans le backend (pas de service séparé)
+
+## Déploiement OpenShift
+
+1. Appliquer les manifests :
+   ```powershell
+   oc apply -f k8s/openshift/namespace.yaml
+   oc apply -f k8s/openshift/configmap.yaml
+   oc apply -f k8s/openshift/pvc.yaml
+   oc apply -f k8s/openshift/deployment.yaml
+   oc apply -f k8s/openshift/service.yaml
+   oc apply -f k8s/openshift/route.yaml
+   ```
+2. Vérifier les ressources :
+   ```powershell
+   oc get pods -n migration-pfe
+   oc get routes -n migration-pfe
+   ```
+
+## Dépendances principales
+
+- `fastapi`, `uvicorn`, `pydantic`
+- `scikit-learn`, `pandas`, `numpy`, `joblib`
+- `sqlalchemy`, `PyJWT`, `passlib`
+- `react`, `react-router-dom`, `vite`
+
+## Tests
+
+```powershell
+python -m pytest tests/ -v
+```
+
+## Notes
+
+- L'API supporte plusieurs modes d'authentification via `src/config.py`
+- Le module OpenShift utilise les commandes CLI `oc` et `virtctl`
+- Le frontend est dans `frontend/frontend-app`
+- La documentation utilisateur et technique est disponible dans `docs/`
+
+## Prochaines étapes
+
+- Compléter l'intégration `virt-v2v` pour les conversions réelles
+- Ajouter une orchestration asynchrone et WebSocket
+- Migrer la persistance vers PostgreSQL
+- Finaliser le frontend avec dashboards et rapports
+- Renforcer le support VMware/vCenter
