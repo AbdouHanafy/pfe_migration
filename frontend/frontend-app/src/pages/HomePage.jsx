@@ -27,6 +27,24 @@ const formatBytes = (value) => {
 
 const fileStem = (filename) => (filename || '').replace(/\.[^.]+$/, '')
 
+const inferVmwareBundle = (files) => {
+  const normalizedFiles = Array.from(files || [])
+  const vmxFile = normalizedFiles.find((file) => /\.vmx$/i.test(file.name))
+  const descriptor = normalizedFiles.find((file) => /\.vmdk$/i.test(file.name) && !/-s\d+\.vmdk$/i.test(file.name))
+  const splitExtents = normalizedFiles.filter((file) => /-s\d+\.vmdk$/i.test(file.name))
+  const primaryFile = vmxFile || descriptor || normalizedFiles[0] || null
+  const inferredName = primaryFile ? fileStem(primaryFile.name) : ''
+  const inferredFormat = descriptor ? 'auto' : (primaryFile?.name.split('.').pop()?.toLowerCase() || 'auto')
+
+  return {
+    primaryFile,
+    inferredName,
+    inferredFormat,
+    hasVmx: Boolean(vmxFile),
+    splitExtentCount: splitExtents.length,
+  }
+}
+
 const buildMigrationGate = (planData, vmName) => {
   if (!vmName) {
     return { ready: false, tone: 'neutral', message: 'Select or enter a VM name first.' }
@@ -474,13 +492,12 @@ const HomePage = () => {
 
                 if (files.length === 0) return
 
-                const primaryFile = files.find((file) => /\.vmdk$/i.test(file.name) && !/-s\d+\.vmdk$/i.test(file.name)) || files[0]
-                const inferredName = fileStem(primaryFile.name)
-                const inferredFormat = primaryFile.name.split('.').pop()?.toLowerCase() || 'vmdk'
+                const bundle = inferVmwareBundle(files)
 
-                setVmName((current) => current || inferredName)
-                setTargetVmName((current) => current || inferredName)
-                setSourceDiskFormat(inferredFormat)
+                setVmName((current) => current || bundle.inferredName)
+                setTargetVmName((current) => current || bundle.inferredName)
+                setSourceDiskFormat(bundle.inferredFormat)
+                setSourceDiskPath('')
               }}
             />
             <Input
@@ -488,7 +505,7 @@ const HomePage = () => {
               value={sourceDiskPath}
               onChange={(e) => setSourceDiskPath(e.target.value)}
             />
-            <Input placeholder="vmdk" value={sourceDiskFormat} onChange={(e) => setSourceDiskFormat(e.target.value)} />
+            <Input placeholder="auto | vmdk | qcow2 | raw" value={sourceDiskFormat} onChange={(e) => setSourceDiskFormat(e.target.value)} />
             <Input placeholder="target vm name" value={targetVmName} onChange={(e) => setTargetVmName(e.target.value)} />
             <Input placeholder="20Gi" value={pvcSize} onChange={(e) => setPvcSize(e.target.value)} />
             <Input placeholder="2Gi" value={memory} onChange={(e) => setMemory(e.target.value)} />
@@ -498,10 +515,17 @@ const HomePage = () => {
             <Input placeholder="vm-migration" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
           </FieldGrid>
           {diskFiles.length > 0 ? (
-            <p className="hint">
-              Local files selected: <strong>{diskFiles.length}</strong> ({formatBytes(diskFiles.reduce((total, file) => total + file.size, 0))}).
-              For split VMware disks, select the descriptor and all `-s###.vmdk` parts together.
-            </p>
+            (() => {
+              const bundle = inferVmwareBundle(diskFiles)
+              return (
+                <p className="hint">
+                  Local files selected: <strong>{diskFiles.length}</strong> ({formatBytes(diskFiles.reduce((total, file) => total + file.size, 0))}).
+                  Primary bundle: <strong>{bundle.primaryFile?.name || 'unknown'}</strong>.
+                  {bundle.hasVmx ? ' VMX detected.' : ' No VMX detected.'}
+                  {bundle.splitExtentCount > 0 ? ` ${bundle.splitExtentCount} split VMDK extent(s) detected.` : ''}
+                </p>
+              )
+            })()
           ) : (
             <p className="hint">
               No local file selected. The migration will use the bastion disk path field if you submit now.

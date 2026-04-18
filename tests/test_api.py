@@ -4,6 +4,7 @@ Tests API basiques sans TestClient (evite les blocages libvirt)
 
 import pytest
 from fastapi import BackgroundTasks
+from pathlib import Path
 
 from src.api.main import (
     config,
@@ -18,7 +19,8 @@ from src.api.main import (
     discover_vmware_esxi_vms,
     get_vmware_esxi_vm_details,
     migrate_to_openshift,
-    OpenShiftMigrationRequest
+    OpenShiftMigrationRequest,
+    _build_uploaded_bundle_summary
 )
 
 def _mock_vm_details(name: str):
@@ -158,3 +160,41 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
 
     # Nettoyage pour eviter tout couplage entre tests.
     job_store._jobs.pop(response["job_id"], None)
+
+
+def test_build_uploaded_bundle_summary_detects_split_vmdk(tmp_path):
+    descriptor = tmp_path / "test.vmdk"
+    descriptor.write_text(
+        '# Disk DescriptorFile\n'
+        'RW 4192256 SPARSE "test-s001.vmdk"\n'
+        'RW 4192256 SPARSE "test-s002.vmdk"\n',
+        encoding="utf-8"
+    )
+    (tmp_path / "test-s001.vmdk").write_bytes(b"part1")
+    (tmp_path / "test-s002.vmdk").write_bytes(b"part2")
+    (tmp_path / "test.vmx").write_text('displayName = "uploaded-test"\n', encoding="utf-8")
+
+    summary = _build_uploaded_bundle_summary(
+        tmp_path,
+        ["test.vmdk", "test-s001.vmdk", "test-s002.vmdk", "test.vmx"],
+        "fallback-name"
+    )
+
+    assert Path(summary["primary_disk_path"]).name == "test.vmdk"
+    assert summary["detected_format"] == "vmdk"
+    assert summary["split_extents"] == ["test-s001.vmdk", "test-s002.vmdk"]
+    assert summary["vm_name"] == "uploaded-test"
+
+
+def test_build_uploaded_bundle_summary_rejects_missing_vmdk_extent(tmp_path):
+    descriptor = tmp_path / "test.vmdk"
+    descriptor.write_text(
+        '# Disk DescriptorFile\n'
+        'RW 4192256 SPARSE "test-s001.vmdk"\n',
+        encoding="utf-8"
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        _build_uploaded_bundle_summary(tmp_path, ["test.vmdk"], "fallback-name")
+
+    assert "Bundle VMware incomplet" in str(exc_info.value)

@@ -5,6 +5,7 @@ API principale pour le système de migration
 import os
 import shutil
 from pathlib import Path
+import re
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status, Depends, Header, Query, BackgroundTasks, UploadFile, File, Form
@@ -206,6 +207,19 @@ def _persist_uploaded_bundle(uploads: List[UploadFile], target_vm_name: str) -> 
     return upload_dir, saved_names
 
 
+def _extract_vmdk_extent_names(descriptor_path: Path) -> List[str]:
+    try:
+        descriptor = descriptor_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+
+    extent_names: List[str] = []
+    pattern = r'^\s*(?:RW|RDONLY|NOACCESS)\s+\d+\s+\S+\s+"([^"]+)"'
+    for match in re.finditer(pattern, descriptor, re.MULTILINE):
+        extent_names.append(Path(match.group(1)).name)
+    return extent_names
+
+
 def _select_primary_disk_path(upload_dir: Path, filenames: List[str]) -> Path:
     preferred = []
     split_pattern = "-s"
@@ -233,11 +247,51 @@ def _select_primary_disk_path(upload_dir: Path, filenames: List[str]) -> Path:
     return candidates[0]
 
 
-def _persist_uploaded_disks(uploads: List[UploadFile], target_vm_name: str) -> tuple[str, str, List[str]]:
-    upload_dir, saved_names = _persist_uploaded_bundle(uploads, target_vm_name)
-    primary_disk_path = _select_primary_disk_path(upload_dir, saved_names)
+def _build_uploaded_bundle_summary(upload_dir: Path, filenames: List[str], target_vm_name: str) -> Dict:
+    primary_disk_path = _select_primary_disk_path(upload_dir, filenames)
     detected_format = primary_disk_path.suffix.lower().lstrip(".") or "raw"
-    return str(primary_disk_path), detected_format, saved_names
+    total_size_bytes = sum((upload_dir / name).stat().st_size for name in filenames if (upload_dir / name).exists())
+
+    vmx_path: Path | None = None
+    vm_name = target_vm_name
+    try:
+        vmx_path = _select_primary_vmx_path(upload_dir, filenames)
+    except HTTPException:
+        vmx_path = None
+
+    if vmx_path is not None:
+        vmx_data = vmware_ws_discoverer._parse_vmx(vmx_path)
+        vm_name = vmx_data.get("displayName") or vmx_path.stem or target_vm_name
+
+    split_extents: List[str] = []
+    if detected_format == "vmdk":
+        split_extents = _extract_vmdk_extent_names(primary_disk_path)
+        missing_extents = [
+            extent_name
+            for extent_name in split_extents
+            if not (upload_dir / extent_name).exists()
+        ]
+        if missing_extents:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Bundle VMware incomplet. Fichiers VMDK manquants: " + ", ".join(missing_extents)
+            )
+
+    return {
+        "vm_name": vm_name,
+        "upload_dir": str(upload_dir),
+        "primary_disk_path": str(primary_disk_path),
+        "detected_format": detected_format,
+        "uploaded_files": filenames,
+        "vmx_path": str(vmx_path) if vmx_path is not None else None,
+        "split_extents": split_extents,
+        "total_size_bytes": total_size_bytes,
+    }
+
+
+def _persist_uploaded_disks(uploads: List[UploadFile], target_vm_name: str) -> Dict:
+    upload_dir, saved_names = _persist_uploaded_bundle(uploads, target_vm_name)
+    return _build_uploaded_bundle_summary(upload_dir, saved_names, target_vm_name)
 
 
 def _select_primary_vmx_path(upload_dir: Path, filenames: List[str]) -> Path:
@@ -571,6 +625,7 @@ async def analyze_uploaded_vm_for_migration(
     return {
         "vm_name": details.get("name", vm_name),
         "source": "uploaded-vmware-workstation",
+        "bundle": _build_uploaded_bundle_summary(upload_dir, saved_names, vm_name),
         "details": details,
         "analysis": analysis
     }
@@ -598,6 +653,7 @@ async def plan_uploaded_vm_migration(
     return {
         "vm_name": details.get("name", vm_name),
         "source": "uploaded-vmware-workstation",
+        "bundle": _build_uploaded_bundle_summary(upload_dir, saved_names, vm_name),
         "details": details,
         "analysis": analysis,
         "conversion_plan": conversion_plan,
@@ -731,8 +787,11 @@ async def migrate_uploaded_disk_to_openshift(
             detail="Aucun fichier disque fourni."
         )
 
-    stored_path, detected_format, uploaded_files = _persist_uploaded_disks(valid_files, target_vm_name)
-    effective_format = (source_disk_format or detected_format).lower()
+    bundle = _persist_uploaded_disks(valid_files, target_vm_name)
+    stored_path = bundle["primary_disk_path"]
+    detected_format = bundle["detected_format"]
+    requested_format = (source_disk_format or "").strip().lower()
+    effective_format = detected_format if requested_format in {"", "auto"} else requested_format
     effective_namespace = namespace or config.OPENSHIFT_NAMESPACE
 
     req = OpenShiftMigrationRequest(
@@ -753,7 +812,8 @@ async def migrate_uploaded_disk_to_openshift(
         "namespace": effective_namespace,
         "source_disk_path": stored_path,
         "source_disk_format": effective_format,
-        "uploaded_files": uploaded_files
+        "uploaded_files": bundle["uploaded_files"],
+        "bundle": bundle
     }
     job = job_store.create_job(vm_name, plan)
     background_tasks.add_task(_run_openshift_migration_job, job.job_id, req, effective_namespace)
@@ -765,7 +825,8 @@ async def migrate_uploaded_disk_to_openshift(
         "namespace": effective_namespace,
         "source_disk_path": stored_path,
         "source_disk_format": effective_format,
-        "uploaded_files": uploaded_files,
+        "uploaded_files": bundle["uploaded_files"],
+        "bundle": bundle,
         "status": "queued"
     }
 
