@@ -84,7 +84,8 @@ const HomePage = () => {
   const [pvcSize, setPvcSize] = useState('20Gi')
   const [memory, setMemory] = useState('2Gi')
   const [cpuCores, setCpuCores] = useState(2)
-  const [firmware, setFirmware] = useState('bios')
+  const [firmware, setFirmware] = useState('auto')
+  const [diskBus, setDiskBus] = useState('auto')
   const [namespace, setNamespace] = useState('vm-migration')
 
   const { token } = useAuth()
@@ -142,10 +143,12 @@ const HomePage = () => {
     setError(null)
     setActionLoading('discover', true)
     try {
-      const endpoint =
-        discoverySource === 'vmware-workstation'
-          ? '/api/v1/discovery/vmware-workstation'
-          : '/api/v1/discovery/kvm'
+      let endpoint = '/api/v1/discovery/kvm'
+      if (discoverySource === 'vmware-workstation') {
+        endpoint = '/api/v1/discovery/vmware-workstation'
+      } else if (discoverySource === 'vmware-esxi') {
+        endpoint = '/api/v1/discovery/vmware-esxi'
+      }
       const data = await api.fetchJson(endpoint)
       setVms(data)
       setVmSource(discoverySource)
@@ -282,7 +285,8 @@ const HomePage = () => {
         formData.append('pvc_size', pvcSize || '20Gi')
         formData.append('memory', memory || '2Gi')
         formData.append('cpu_cores', `${parseInt(cpuCores, 10) || 2}`)
-        formData.append('firmware', firmware || 'bios')
+        formData.append('firmware', firmware || 'auto')
+        formData.append('disk_bus', diskBus || 'auto')
         formData.append('namespace', namespace || 'vm-migration')
 
         data = await api.fetchJson(`/api/v1/migration/openshift-upload/${vmName}`, {
@@ -297,7 +301,8 @@ const HomePage = () => {
           pvc_size: pvcSize || '20Gi',
           memory: memory || '2Gi',
           cpu_cores: parseInt(cpuCores, 10) || 2,
-          firmware: firmware || 'bios',
+          firmware: firmware || 'auto',
+          disk_bus: diskBus || 'auto',
           namespace: namespace || 'vm-migration',
         }
 
@@ -365,6 +370,7 @@ const HomePage = () => {
                 onChange={(e) => setDiscoverySource(e.target.value)}
               >
                 <option value="kvm">KVM</option>
+                <option value="vmware-esxi">VMware ESXi / vSphere</option>
                 <option value="vmware-workstation">VMware Workstation</option>
               </select>
               <Button onClick={onDiscover} disabled={loading.discover}>
@@ -487,7 +493,8 @@ const HomePage = () => {
             <Input placeholder="20Gi" value={pvcSize} onChange={(e) => setPvcSize(e.target.value)} />
             <Input placeholder="2Gi" value={memory} onChange={(e) => setMemory(e.target.value)} />
             <Input type="number" placeholder="2" value={cpuCores} onChange={(e) => setCpuCores(e.target.value)} />
-            <Input placeholder="bios" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+            <Input placeholder="auto | bios | uefi" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+            <Input placeholder="auto | sata | scsi | virtio" value={diskBus} onChange={(e) => setDiskBus(e.target.value)} />
             <Input placeholder="vm-migration" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
           </FieldGrid>
           {diskFiles.length > 0 ? (

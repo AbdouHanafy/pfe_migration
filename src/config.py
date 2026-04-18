@@ -44,6 +44,14 @@ class Config:
         "VMWARE_WORKSTATION_PATHS",
         [str(os.path.expanduser("~/vmware"))]
     )
+
+    # VMware ESXi / vSphere discovery
+    VSPHERE_HOST = os.getenv("VSPHERE_HOST", "")
+    VSPHERE_PORT = int(os.getenv("VSPHERE_PORT", "443"))
+    VSPHERE_USER = os.getenv("VSPHERE_USER", "")
+    VSPHERE_PASSWORD = os.getenv("VSPHERE_PASSWORD", "")
+    VSPHERE_DATACENTER = os.getenv("VSPHERE_DATACENTER", "")
+    VSPHERE_VERIFY_SSL = os.getenv("VSPHERE_VERIFY_SSL", "false").lower() == "true"
     
     # Base de données (pour plus tard)
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./migration.db")

@@ -8,6 +8,13 @@ SUPPORTED_DISK_FORMATS = {"raw", "qcow2"}
 SUPPORTED_DISK_BUSES = {"virtio", "scsi", "sata"}
 SUPPORTED_NET_MODELS = {"virtio", "e1000"}
 
+
+def _normalize_disk_bus(value: str) -> str:
+    raw = (value or "unknown").lower()
+    prefix = raw.split(":", 1)[0]
+    return prefix.rstrip("0123456789") or "unknown"
+
+
 def build_conversion_plan(vm_details: Dict, analysis: Dict) -> Dict:
     """Construit un plan de conversion base sur l'analyse."""
     actions: List[Dict] = []
@@ -22,9 +29,8 @@ def build_conversion_plan(vm_details: Dict, analysis: Dict) -> Dict:
 
     for disk in vm_details.get("disks", []):
         fmt = (disk.get("format") or "unknown").lower()
-        # Normalize bus: "scsi0:0" → "scsi"
-        raw_bus = (disk.get("bus") or "unknown").lower()
-        bus = raw_bus.rstrip("0123456789").rstrip(":")
+        bus = _normalize_disk_bus(disk.get("bus") or "unknown")
+
         if fmt not in SUPPORTED_DISK_FORMATS:
             actions.append({
                 "type": "disk_format_conversion",
@@ -33,7 +39,6 @@ def build_conversion_plan(vm_details: Dict, analysis: Dict) -> Dict:
                 "to": "raw"
             })
 
-        bus = (disk.get("bus") or "unknown").lower()
         if bus not in SUPPORTED_DISK_BUSES:
             actions.append({
                 "type": "disk_bus_change",

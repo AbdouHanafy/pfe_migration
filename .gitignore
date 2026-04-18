@@ -8,7 +8,9 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+.venv311/
 venv/
 .env
 logs/
 data/
+migration.db

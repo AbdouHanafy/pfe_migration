@@ -18,6 +18,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from src.discovery.kvm_discoverer import KVMDiscoverer
+from src.discovery.vmware_esxi_discoverer import VMwareESXiDiscoverer
 from src.discovery.vmware_workstation_discoverer import VMwareWorkstationDiscoverer
 from src.config import config
 from src.database.session import get_db, Base, engine
@@ -74,6 +75,14 @@ kvm_discoverer = KVMDiscoverer(connection_uri=config.KVM_CONNECTION_URI)
 vmware_ws_discoverer = VMwareWorkstationDiscoverer(
     search_paths=config.VMWARE_WORKSTATION_PATHS
 )
+vmware_esxi_discoverer = VMwareESXiDiscoverer(
+    host=config.VSPHERE_HOST,
+    username=config.VSPHERE_USER,
+    password=config.VSPHERE_PASSWORD,
+    port=config.VSPHERE_PORT,
+    datacenter=config.VSPHERE_DATACENTER,
+    verify_ssl=config.VSPHERE_VERIFY_SSL,
+)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def _ensure_kvm_connected() -> None:
@@ -89,6 +98,14 @@ def _get_vm_details(vm_name: str, source: str) -> Dict:
     if src == "kvm":
         _ensure_kvm_connected()
         details = kvm_discoverer.get_vm_details(vm_name)
+    elif src == "vmware-esxi":
+        try:
+            details = vmware_esxi_discoverer.get_vm_details(vm_name)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc)
+            )
     elif src == "vmware-workstation":
         details = vmware_ws_discoverer.get_vm_details(vm_name)
     else:
@@ -160,7 +177,8 @@ class OpenShiftMigrationRequest(BaseModel):
     pvc_size: str = Field("20Gi", description="Taille du PVC")
     memory: str = Field("2Gi", description="Memoire demandee pour la VM")
     cpu_cores: int = Field(2, description="Nombre de coeurs CPU")
-    firmware: str = Field("bios", description="bios ou uefi")
+    firmware: str = Field("auto", description="auto, bios ou uefi")
+    disk_bus: str = Field("auto", description="auto, sata, scsi ou virtio")
     namespace: Optional[str] = Field(None, description="Namespace OpenShift")
 
 
@@ -286,7 +304,10 @@ def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, na
             pvc_name=upload_result.pvc_name,
             memory=req.memory,
             cpu_cores=req.cpu_cores,
-            firmware=req.firmware
+            firmware=req.firmware,
+            disk_bus=req.disk_bus,
+            source_path=req.source_disk_path,
+            source_format=req.source_disk_format
         )
         apply_manifest(manifest)
         job_store.finish_last_step(job_id, "completed")
@@ -326,6 +347,7 @@ async def root(_: None = Depends(_require_auth)):
             "health": "/health",
             "docs": "/docs",
             "discovery": "/api/v1/discovery/kvm",
+            "discovery_vmware_esxi": "/api/v1/discovery/vmware-esxi",
             "discovery_vmware_workstation": "/api/v1/discovery/vmware-workstation",
             "migration_analyze": "/api/v1/migration/analyze/{vm_name}",
             "migration_analyze_upload": "/api/v1/migration/analyze-upload",
@@ -348,6 +370,7 @@ async def health_check(_: None = Depends(_require_auth)):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": {
             "kvm_connection": kvm_discoverer.conn is not None,
+            "vmware_esxi_configured": vmware_esxi_discoverer.is_configured,
             "tools": check_tools()
         }
     }
@@ -419,6 +442,48 @@ async def get_kvm_vm_details(vm_name: str, _: None = Depends(_require_auth)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erreur lors de la récupération des détails: {str(e)}"
+        )
+
+@app.get("/api/v1/discovery/vmware-esxi", response_model=List[Dict])
+async def discover_vmware_esxi_vms(_: None = Depends(_require_auth)):
+    """Découvre toutes les VMs VMware ESXi / vSphere"""
+    try:
+        return vmware_esxi_discoverer.list_vms()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc)
+        )
+    except Exception as e:
+        logger.error(f"Erreur découverte VMware ESXi: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur lors de la découverte VMware ESXi: {str(e)}"
+        )
+
+@app.get("/api/v1/discovery/vmware-esxi/{vm_name}")
+async def get_vmware_esxi_vm_details(vm_name: str, _: None = Depends(_require_auth)):
+    """Récupère les détails d'une VM VMware ESXi / vSphere spécifique"""
+    try:
+        details = vmware_esxi_discoverer.get_vm_details(vm_name)
+        if details is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"VM '{vm_name}' non trouvée"
+            )
+        return details
+    except HTTPException:
+        raise
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc)
+        )
+    except Exception as e:
+        logger.error(f"Erreur détails VMware ESXi {vm_name}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur lors de la récupération des détails VMware ESXi: {str(e)}"
         )
 
 @app.get("/api/v1/discovery/vmware-workstation", response_model=List[Dict])
@@ -645,7 +710,8 @@ async def migrate_uploaded_disk_to_openshift(
     pvc_size: str = Form("20Gi"),
     memory: str = Form("2Gi"),
     cpu_cores: int = Form(2),
-    firmware: str = Form("bios"),
+    firmware: str = Form("auto"),
+    disk_bus: str = Form("auto"),
     namespace: str = Form(""),
     _: None = Depends(_require_auth)
 ):
@@ -677,6 +743,7 @@ async def migrate_uploaded_disk_to_openshift(
         memory=memory,
         cpu_cores=cpu_cores,
         firmware=firmware,
+        disk_bus=disk_bus,
         namespace=effective_namespace
     )
 

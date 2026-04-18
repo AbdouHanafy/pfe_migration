@@ -3,13 +3,18 @@ OpenShift/KubeVirt helpers for real migration steps.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 import os
 import shutil
 import subprocess
 import json
+from pathlib import Path
 
 from src.config import config
+
+SUPPORTED_BOOT_FIRMWARE = {"auto", "bios", "uefi", "efi"}
+SUPPORTED_DISK_BUS = {"auto", "virtio", "scsi", "sata"}
+
 
 @dataclass
 class UploadResult:
@@ -18,6 +23,7 @@ class UploadResult:
     image_path: str
     size: str
     uploadproxy_url: str
+
 
 def _run(cmd: list[str]) -> Tuple[int, str, str]:
     result = subprocess.run(
@@ -38,6 +44,7 @@ def check_tools() -> Dict[str, bool]:
         "qemu-img": shutil.which("qemu-img") is not None
     }
 
+
 def get_uploadproxy_url() -> str:
     if config.OPENSHIFT_UPLOADPROXY_URL:
         return config.OPENSHIFT_UPLOADPROXY_URL
@@ -52,6 +59,7 @@ def get_uploadproxy_url() -> str:
         raise RuntimeError(f"Unable to get uploadproxy route: {err or out}")
     return f"https://{out}"
 
+
 def ensure_namespace(namespace: str) -> None:
     code, _, _ = _run(["oc", "get", "namespace", namespace])
     if code == 0:
@@ -60,13 +68,22 @@ def ensure_namespace(namespace: str) -> None:
     if code != 0:
         raise RuntimeError(f"Unable to create namespace: {err or out}")
 
+
+def _build_converted_target_path(source_path: str, output_format: str) -> str:
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    source = Path(source_path)
+    suffix = ".raw" if output_format == "raw" else f".{output_format}"
+    stem = source.stem or "disk"
+    return str(Path(config.DATA_DIR) / f"{stem}-converted{suffix}")
+
+
 def convert_disk_if_needed(source_path: str, source_format: str) -> str:
     source_format = (source_format or "").lower()
     if source_format in ("qcow2", "raw"):
         return source_path
 
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-    target_path = os.path.join(config.DATA_DIR, "converted.qcow2")
+    # Keep qcow2 as the normalized intermediate format for uploads.
+    target_path = _build_converted_target_path(source_path, "qcow2")
 
     cmd = [
         "qemu-img", "convert",
@@ -78,6 +95,7 @@ def convert_disk_if_needed(source_path: str, source_format: str) -> str:
     if code != 0:
         raise RuntimeError(f"Disk conversion failed: {err or out}")
     return target_path
+
 
 def upload_disk(image_path: str, pvc_name: str, size: str, namespace: str) -> UploadResult:
     uploadproxy_url = get_uploadproxy_url()
@@ -103,32 +121,87 @@ def upload_disk(image_path: str, pvc_name: str, size: str, namespace: str) -> Up
         uploadproxy_url=uploadproxy_url
     )
 
+
+def _resolve_firmware(firmware: str, source_path: str = "") -> str:
+    requested = (firmware or "auto").lower()
+    if requested not in SUPPORTED_BOOT_FIRMWARE:
+        raise ValueError(f"Unsupported firmware '{firmware}'. Use auto, bios or uefi.")
+
+    if requested in {"uefi", "efi"}:
+        return "efi"
+    if requested == "bios":
+        return "bios"
+
+    # auto: use a conservative default, but honor clear hints in filenames.
+    source_hint = Path(source_path or "").name.lower()
+    if "uefi" in source_hint or "efi" in source_hint:
+        return "efi"
+    return "bios"
+
+
+def _resolve_disk_bus(disk_bus: str, source_format: str = "") -> str:
+    requested = (disk_bus or "auto").lower()
+    if requested not in SUPPORTED_DISK_BUS:
+        raise ValueError(f"Unsupported disk bus '{disk_bus}'. Use auto, sata, scsi or virtio.")
+
+    if requested != "auto":
+        return requested
+
+    # Compatibility-first default for first boot after import.
+    source_fmt = (source_format or "").lower()
+    if source_fmt in {"vmdk", "vhd", "vhdx"}:
+        return "sata"
+    return "sata"
+
+
+def _build_disk_device(name: str, disk_bus: str) -> Dict:
+    return {
+        "name": name,
+        "bootOrder": 1,
+        "disk": {"bus": disk_bus}
+    }
+
+
 def build_vm_manifest(
     vm_name: str,
     namespace: str,
     pvc_name: str,
     memory: str,
     cpu_cores: int,
-    firmware: str = "bios"
+    firmware: str = "auto",
+    disk_bus: str = "auto",
+    source_path: str = "",
+    source_format: str = ""
 ) -> Dict:
-    firmware = (firmware or "bios").lower()
-    bootloader = {"bios": {}} if firmware == "bios" else {"uefi": {}}
+    resolved_firmware = _resolve_firmware(firmware, source_path)
+    resolved_disk_bus = _resolve_disk_bus(disk_bus, source_format)
+    bootloader = {"bios": {}} if resolved_firmware == "bios" else {"efi": {"secureBoot": False}}
 
     return {
         "apiVersion": "kubevirt.io/v1",
         "kind": "VirtualMachine",
-        "metadata": {"name": vm_name, "namespace": namespace},
+        "metadata": {
+            "name": vm_name,
+            "namespace": namespace,
+            "annotations": {
+                "vm.kubevirt.io/validations": "phase1-boot-profile"
+            }
+        },
         "spec": {
             "running": True,
             "template": {
                 "metadata": {"labels": {"kubevirt.io/domain": vm_name}},
                 "spec": {
+                    "terminationGracePeriodSeconds": 0,
                     "domain": {
+                        "machine": {"type": "q35"},
                         "cpu": {"cores": cpu_cores},
                         "resources": {"requests": {"memory": memory}},
                         "devices": {
+                            "autoattachSerialConsole": True,
+                            "rng": {},
                             "disks": [
-                                {"name": "rootdisk", "disk": {"bus": "virtio"}}
+                                _build_disk_device("rootdisk", resolved_disk_bus)
                             ],
                             "interfaces": [
                                 {"name": "default", "masquerade": {}}
@@ -144,6 +217,7 @@ def build_vm_manifest(
             }
         }
     }
+
 
 def apply_manifest(manifest: Dict) -> None:
     data = json.dumps(manifest)

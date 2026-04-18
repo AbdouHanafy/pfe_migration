@@ -20,6 +20,14 @@ data:
   # VMware Workstation paths
   VMWARE_WORKSTATION_PATHS: ""
 
+  # VMware ESXi / vSphere
+  VSPHERE_HOST: ""
+  VSPHERE_PORT: "443"
+  VSPHERE_USER: ""
+  VSPHERE_PASSWORD: ""
+  VSPHERE_DATACENTER: ""
+  VSPHERE_VERIFY_SSL: "false"
+
   # OpenShift / KubeVirt
   OPENSHIFT_NAMESPACE: "vm-migration"
   ENABLE_REAL_MIGRATION: "false"

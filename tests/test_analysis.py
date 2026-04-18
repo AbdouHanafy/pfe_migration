@@ -39,3 +39,17 @@ def test_analyze_vm_non_compatible():
     }
     analysis = analyze_vm(vm_details)
     assert analysis["compatibility"] == "non_compatible"
+
+
+def test_vmware_scsi_bus_is_not_flagged_for_conversion():
+    vm_details = {
+        "specs": {"os_arch": "x86_64", "memory_mb": 2048, "cpus": 1},
+        "disks": [{"format": "vmdk", "bus": "scsi0:0", "path": "/tmp/test.vmdk"}],
+        "network": [{"model": "e1000"}]
+    }
+    analysis = analyze_vm(vm_details)
+    plan = build_conversion_plan(vm_details, analysis)
+
+    action_types = [action["type"] for action in plan["actions"]]
+    assert "disk_format_conversion" in action_types
+    assert "disk_bus_change" not in action_types

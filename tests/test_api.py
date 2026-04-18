@@ -9,11 +9,14 @@ from src.api.main import (
     config,
     job_store,
     kvm_discoverer,
+    vmware_esxi_discoverer,
     health_check,
     analyze_vm_for_migration,
     plan_migration,
     start_migration_job,
     get_migration_status,
+    discover_vmware_esxi_vms,
+    get_vmware_esxi_vm_details,
     migrate_to_openshift,
     OpenShiftMigrationRequest
 )
@@ -64,6 +67,26 @@ async def test_analyze_plan_start_status(monkeypatch):
 
     status = await get_migration_status(job_id)
     assert status["status"] in ("running", "completed", "queued")
+
+
+@pytest.mark.asyncio
+async def test_vmware_esxi_discovery_and_plan(monkeypatch):
+    monkeypatch.setattr(vmware_esxi_discoverer, "list_vms", lambda: [
+        {"name": "esxi-vm", "uuid": "123", "state": "running", "hypervisor": "vmware-esxi"}
+    ])
+    monkeypatch.setattr(vmware_esxi_discoverer, "get_vm_details", lambda name: _mock_vm_details(name))
+
+    discovered = await discover_vmware_esxi_vms()
+    assert discovered[0]["hypervisor"] == "vmware-esxi"
+
+    details = await get_vmware_esxi_vm_details("esxi-vm")
+    assert details["name"] == "esxi-vm"
+
+    response = await analyze_vm_for_migration("esxi-vm", source="vmware-esxi")
+    assert response["analysis"]["compatibility"] == "compatible"
+
+    response = await plan_migration("esxi-vm", source="vmware-esxi")
+    assert response["strategy"]["strategy"] == "direct"
 
 
 @pytest.mark.asyncio

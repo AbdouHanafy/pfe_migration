@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Module de découverte des VMs VMware Workstation via fichiers .vmx
+Module de decouverte des VMs VMware Workstation via fichiers .vmx
 """
 
 from pathlib import Path
@@ -10,12 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# VMware guestOS code → OS type + Architecture mapping
-# ============================================================
-
 _VMWARE_OS_MAP = {
-    # Linux
     "ubuntu": ("ubuntu", "x86"),
     "ubuntu-64": ("Ubuntu", "x86_64"),
     "debian": ("debian", "x86"),
@@ -31,9 +26,8 @@ _VMWARE_OS_MAP = {
     "otherlinux": ("other-linux", "x86"),
     "otherlinux-64": ("other-linux", "x86_64"),
     "other-64": ("linux", "x86_64"),
-    # Windows
-    "windows9": ("Windows 95", "x86"),
-    "windows9-64": ("Windows 95", "x86"),
+    "windows9": ("Windows 10", "x86"),
+    "windows9-64": ("Windows 10", "x86_64"),
     "winxphome": ("Windows XP", "x86"),
     "winxppro": ("Windows XP", "x86"),
     "winxphome-64": ("Windows XP", "x86_64"),
@@ -50,40 +44,31 @@ _VMWARE_OS_MAP = {
     "windows8": ("Windows 8", "x86"),
     "windows8-64": ("Windows 8", "x86_64"),
     "windows8server-64": ("Windows Server 2012", "x86_64"),
-    "windows9": ("Windows 10", "x86"),
-    "windows9-64": ("Windows 10", "x86_64"),
     "win11": ("Windows 11", "x86_64"),
     "win11srv-64": ("Windows Server 2022", "x86_64"),
     "win12srv-64": ("Windows Server 2025", "x86_64"),
-    # Other
     "other": ("unknown", "unknown"),
 }
 
 
 def _parse_vmware_guest_os(guest_os_code: str) -> tuple:
-    """
-    Traduit un code VMware guestOS en (os_type, os_arch).
-
-    >>> _parse_vmware_guest_os("ubuntu-64")
-    ('Ubuntu', 'x86_64')
-    >>> _parse_vmware_guest_os("windows9-64")
-    ('Windows 10', 'x86_64')
-    >>> _parse_vmware_guest_os("unknown-os")
-    ('unknown', 'unknown')
-    """
     code = (guest_os_code or "unknown").lower().strip()
     os_type, os_arch = _VMWARE_OS_MAP.get(code, ("unknown", "unknown"))
     return os_type, os_arch
 
 
+def _normalize_vmware_bus(bus_key: str) -> str:
+    prefix = (bus_key or "unknown").split(".", 1)[0].split(":", 1)[0].lower()
+    return prefix.rstrip("0123456789") or "unknown"
+
+
 class VMwareWorkstationDiscoverer:
-    """Découvre et analyse les VMs VMware Workstation (.vmx)"""
+    """Decouvre et analyse les VMs VMware Workstation (.vmx)."""
 
     def __init__(self, search_paths: List[str]):
         self.search_paths = [Path(p).expanduser() for p in (search_paths or [])]
 
     def list_vms(self) -> List[Dict]:
-        """Liste toutes les VMs trouvées"""
         vms = []
         for vmx_path in self._find_vmx_files():
             vmx_data = self._parse_vmx(vmx_path)
@@ -101,7 +86,6 @@ class VMwareWorkstationDiscoverer:
         return vms
 
     def get_vm_details(self, vm_name: str) -> Optional[Dict]:
-        """Récupère les détails d'une VM spécifique"""
         for vmx_path in self._find_vmx_files():
             vmx_data = self._parse_vmx(vmx_path)
             name = vmx_data.get("displayName") or vmx_path.stem
@@ -129,7 +113,7 @@ class VMwareWorkstationDiscoverer:
                 continue
             for vmx in base.rglob("*.vmx"):
                 vmx_files.append(vmx)
-        # Remove duplicates while preserving order
+
         seen = set()
         unique = []
         for path in vmx_files:
@@ -173,7 +157,6 @@ class VMwareWorkstationDiscoverer:
             except ValueError:
                 cpus = 1
 
-        # --- OS detection ---
         raw_guest_os = vmx_data.get("guestOS", "unknown")
         os_type, os_arch = _parse_vmware_guest_os(raw_guest_os)
 
@@ -189,12 +172,9 @@ class VMwareWorkstationDiscoverer:
         disks: List[Dict] = []
         for key, value in vmx_data.items():
             if key.endswith(".fileName") and value.lower().endswith(".vmdk"):
-                path = value
-                full_path = (base_dir / path).resolve() if not Path(path).is_absolute() else Path(path)
-
-                # Extract bus type from key prefix (e.g., "scsi0:0" → "scsi")
-                bus_key = key.split(".")[0]  # e.g., "scsi0:0"
-                bus_type = bus_key.rstrip("0123456789").rstrip(":").lower()  # "scsi"
+                full_path = (base_dir / value).resolve() if not Path(value).is_absolute() else Path(value)
+                bus_key = key.split(".")[0]
+                bus_type = _normalize_vmware_bus(bus_key)
 
                 disks.append(
                     {
@@ -210,20 +190,18 @@ class VMwareWorkstationDiscoverer:
 
     def _extract_network(self, vmx_data: Dict[str, str]) -> List[Dict]:
         networks: List[Dict] = []
-        # Look for ethernet interfaces: ethernet0, ethernet1, ...
         for key in vmx_data:
             if key.startswith("ethernet") and key.endswith(".present"):
                 if vmx_data[key].lower() != "true":
                     continue
-                idx = key.split(".")[0]  # e.g., "ethernet0"
+                idx = key.split(".")[0]
                 address_type = vmx_data.get(f"{idx}.addressType", "")
                 mac = ""
                 if address_type.lower() == "static":
                     mac = vmx_data.get(f"{idx}.address", "")
                 elif address_type.lower() == "generated":
                     mac = vmx_data.get(f"{idx}.generatedAddress", "")
-                network_name = vmx_data.get(f"{idx}.connectionType",
-                                            vmx_data.get(f"{idx}.networkName", ""))
+                network_name = vmx_data.get(f"{idx}.connectionType", vmx_data.get(f"{idx}.networkName", ""))
                 model = vmx_data.get(f"{idx}.virtualDev", "e1000")
 
                 networks.append(
@@ -235,4 +213,3 @@ class VMwareWorkstationDiscoverer:
                     }
                 )
         return networks
-
