@@ -136,7 +136,6 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
 
     monkeypatch.setattr("src.api.main.ensure_namespace", fake_ensure_namespace)
     monkeypatch.setattr("src.api.main.normalize_disk_for_http_import", fake_normalize)
-    monkeypatch.setattr("src.api.main.build_import_url", lambda path: "http://10.9.21.90:8000/api/v1/openshift/imports/test.qcow2")
     monkeypatch.setattr("src.api.main.create_data_volume_http", fake_import)
     monkeypatch.setattr("src.api.main.wait_for_data_volume", fake_wait)
     monkeypatch.setattr("src.api.main.build_vm_manifest", fake_manifest)
@@ -153,11 +152,10 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
     assert response["status"] == "queued"
     assert response["job_id"]
     assert response["import_mode"] == "http"
-    assert response["import_url"] == "http://10.9.21.90:8000/api/v1/openshift/imports/test.qcow2"
     assert response["vm_console_url"] == (
         "https://console-openshift.example/k8s/ns/vm-migration/kubevirt.io~v1~VirtualMachine/target-vm"
     )
-    assert calls == [("normalize", "/tmp/source.vmdk", "vmdk")]
+    assert calls == []
 
     await background_tasks()
 

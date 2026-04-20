@@ -38,7 +38,6 @@ from src.openshift import (
     upload_disk,
     create_data_volume_http,
     wait_for_data_volume,
-    build_import_url,
     build_vm_manifest,
     apply_manifest
 )
@@ -837,24 +836,18 @@ async def migrate_to_openshift(
 
     namespace = req.namespace or config.OPENSHIFT_NAMESPACE
     import_mode = _resolve_import_mode(req.import_mode)
-    normalized_path = req.source_disk_path
-    import_url = ""
-    if import_mode == "http":
-        normalized_path = normalize_disk_for_http_import(req.source_disk_path, req.source_disk_format)
-        import_url = build_import_url(normalized_path)
     plan = {
         "strategy": {"strategy": f"openshift-{import_mode}"},
         "target_vm_name": req.target_vm_name,
         "namespace": namespace,
-        "source_disk_path": normalized_path,
+        "source_disk_path": req.source_disk_path,
         "source_disk_format": req.source_disk_format,
         "import_mode": import_mode,
-        "import_url": import_url,
         "vm_console_url": build_vm_console_url(req.target_vm_name, namespace)
     }
     job = job_store.create_job(vm_name, plan)
     queued_req = OpenShiftMigrationRequest(
-        source_disk_path=normalized_path,
+        source_disk_path=req.source_disk_path,
         source_disk_format=req.source_disk_format,
         target_vm_name=req.target_vm_name,
         pvc_size=req.pvc_size,
@@ -872,9 +865,8 @@ async def migrate_to_openshift(
         vm_name,
         req.target_vm_name,
         namespace,
-        source_disk_path=normalized_path,
-        import_mode=import_mode,
-        import_url=import_url
+        source_disk_path=req.source_disk_path,
+        import_mode=import_mode
     )
 
 
@@ -931,19 +923,13 @@ async def migrate_uploaded_disk_to_openshift(
         import_mode=effective_import_mode
     )
 
-    import_url = ""
-    if effective_import_mode == "http":
-        req.source_disk_path = normalize_disk_for_http_import(stored_path, effective_format)
-        import_url = build_import_url(req.source_disk_path)
-
     plan = {
         "strategy": {"strategy": f"openshift-{effective_import_mode}"},
         "target_vm_name": target_vm_name,
         "namespace": effective_namespace,
-        "source_disk_path": req.source_disk_path,
+        "source_disk_path": stored_path,
         "source_disk_format": effective_format,
         "import_mode": effective_import_mode,
-        "import_url": import_url,
         "uploaded_files": bundle["uploaded_files"],
         "bundle": bundle,
         "vm_console_url": build_vm_console_url(target_vm_name, effective_namespace)
@@ -956,10 +942,9 @@ async def migrate_uploaded_disk_to_openshift(
         vm_name,
         target_vm_name,
         effective_namespace,
-        source_disk_path=req.source_disk_path,
+        source_disk_path=stored_path,
         source_disk_format=effective_format,
         import_mode=effective_import_mode,
-        import_url=import_url,
         uploaded_files=bundle["uploaded_files"],
         bundle=bundle
     )
