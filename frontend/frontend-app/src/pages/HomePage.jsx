@@ -129,6 +129,7 @@ const HomePage = () => {
     discover: false,
     analyze: false,
     plan: false,
+    prepare: false,
     start: false,
     status: false,
     report: false,
@@ -146,6 +147,7 @@ const HomePage = () => {
   const [namespace, setNamespace] = useState('vm-migration')
   const [importMode, setImportMode] = useState('http')
   const [migrationNotice, setMigrationNotice] = useState('')
+  const [preparedBundle, setPreparedBundle] = useState(null)
 
   const { token } = useAuth()
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
@@ -404,6 +406,43 @@ const HomePage = () => {
     }
   }
 
+  const onPrepareBastion = async () => {
+    if (!vmName) return pushLog('VM name required')
+    if (diskFiles.length === 0) return pushLog('Select local VM files first')
+
+    setError(null)
+    setActionLoading('prepare', true)
+    try {
+      setMigrationNotice('Uploading files to the bastion. This may take a while for large disks.')
+      pushLog('Uploading local VM files to the bastion so the disk path can be filled automatically.')
+
+      const formData = new FormData()
+      diskFiles.forEach((file) => {
+        formData.append('disk_files', file)
+      })
+      formData.append('target_vm_name', targetVmName || vmName)
+      formData.append('source_disk_format', sourceDiskFormat || 'auto')
+
+      const data = await api.fetchJson(`/api/v1/migration/prepare-upload/${vmName}`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      setPreparedBundle(data)
+      setSourceDiskPath(data.source_disk_path || '')
+      setSourceDiskFormat(data.source_disk_format || sourceDiskFormat)
+      setTargetVmName(data.target_vm_name || targetVmName || vmName)
+      setVmName(data.vm_name || vmName)
+      setDiskFiles([])
+      setMigrationNotice('Files prepared on the bastion. The bastion disk path was filled automatically.')
+      pushLog(`Bastion path ready: ${data.source_disk_path}`)
+    } catch (err) {
+      handleError('Prepare on bastion', err)
+    } finally {
+      setActionLoading('prepare', false)
+    }
+  }
+
   const submitOpenShiftMigration = async ({
     loadingKey,
     actionLabel,
@@ -647,9 +686,14 @@ const HomePage = () => {
           title="OpenShift Real Migration"
           hint="Upload a local disk from your browser or use a disk path that already exists on the bastion. Real migration unlocks only after a successful Plan."
           actions={
-            <Button onClick={onOpenShift} disabled={loading.openshift || !migrationGate.ready}>
-              {btnLabel('openshift') || 'Migrate to OpenShift'}
-            </Button>
+            <>
+              <Button variant="ghost" onClick={onPrepareBastion} disabled={loading.prepare || diskFiles.length === 0}>
+                {btnLabel('prepare') || 'Prepare On Bastion'}
+              </Button>
+              <Button onClick={onOpenShift} disabled={loading.openshift || !migrationGate.ready}>
+                {btnLabel('openshift') || 'Migrate to OpenShift'}
+              </Button>
+            </>
           }
         >
           <p className="hint">
@@ -742,6 +786,11 @@ const HomePage = () => {
               No local file selected. The migration will use the bastion disk path field if you submit now.
             </p>
           )}
+          {preparedBundle?.source_disk_path ? (
+            <p className="hint">
+              Prepared on bastion: <strong>{preparedBundle.source_disk_path}</strong>
+            </p>
+          ) : null}
           <JsonBlock data={openShiftResult} />
         </Card>
 

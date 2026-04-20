@@ -503,6 +503,7 @@ async def root(_: None = Depends(_require_auth)):
             "migration_analyze_upload": "/api/v1/migration/analyze-upload",
             "migration_plan": "/api/v1/migration/plan/{vm_name}",
             "migration_plan_upload": "/api/v1/migration/plan-upload",
+            "migration_prepare_upload": "/api/v1/migration/prepare-upload/{vm_name}",
             "migration_start": "/api/v1/migration/start/{vm_name}",
             "migration_status": "/api/v1/migration/status/{job_id}",
             "migration_jobs": "/api/v1/migration/jobs",
@@ -754,6 +755,38 @@ async def plan_uploaded_vm_migration(
         "analysis": analysis,
         "conversion_plan": conversion_plan,
         "strategy": strategy
+    }
+
+
+@app.post("/api/v1/migration/prepare-upload/{vm_name}")
+async def prepare_uploaded_disk_for_bastion(
+    vm_name: str,
+    disk_files: List[UploadFile] = File(...),
+    target_vm_name: str = Form(""),
+    source_disk_format: str = Form(""),
+    _: None = Depends(_require_auth)
+):
+    """Upload local VM files to the backend and return the stored bastion path."""
+    valid_files = [upload for upload in disk_files if upload and upload.filename]
+    if not valid_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucun fichier disque fourni."
+        )
+
+    requested_target_name = (target_vm_name or "").strip() or vm_name
+    bundle = _persist_uploaded_disks(valid_files, requested_target_name)
+    detected_format = bundle["detected_format"]
+    requested_format = (source_disk_format or "").strip().lower()
+    effective_format = detected_format if requested_format in {"", "auto"} else requested_format
+
+    return {
+        "vm_name": bundle.get("vm_name", vm_name),
+        "target_vm_name": requested_target_name,
+        "source_disk_path": bundle["primary_disk_path"],
+        "source_disk_format": effective_format,
+        "bundle": bundle,
+        "message": "Files uploaded to the bastion. You can now run the real migration using the prepared bastion path."
     }
 
 @app.post("/api/v1/migration/start/{vm_name}")

@@ -19,6 +19,7 @@ from src.api.main import (
     discover_vmware_esxi_vms,
     get_vmware_esxi_vm_details,
     migrate_to_openshift,
+    prepare_uploaded_disk_for_bastion,
     OpenShiftMigrationRequest,
     _build_uploaded_bundle_summary
 )
@@ -220,3 +221,31 @@ def test_build_uploaded_bundle_summary_rejects_missing_vmdk_extent(tmp_path):
         _build_uploaded_bundle_summary(tmp_path, ["test.vmdk"], "fallback-name")
 
     assert "Bundle VMware incomplet" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_prepare_uploaded_disk_for_bastion_returns_stored_path(monkeypatch):
+    monkeypatch.setattr(
+        "src.api.main._persist_uploaded_disks",
+        lambda uploads, target_vm_name: {
+            "vm_name": "abdou",
+            "primary_disk_path": "/root/pfe_migration/data/uploads/abdou/abdou.vmdk",
+            "detected_format": "vmdk",
+            "uploaded_files": ["abdou.vmdk", "abdou-s001.vmdk"],
+        }
+    )
+
+    class DummyUpload:
+        def __init__(self, filename):
+            self.filename = filename
+
+    response = await prepare_uploaded_disk_for_bastion(
+        "abdou",
+        disk_files=[DummyUpload("abdou.vmdk"), DummyUpload("abdou-s001.vmdk")],
+        target_vm_name="abdou-os",
+        source_disk_format="auto",
+    )
+
+    assert response["target_vm_name"] == "abdou-os"
+    assert response["source_disk_path"] == "/root/pfe_migration/data/uploads/abdou/abdou.vmdk"
+    assert response["source_disk_format"] == "vmdk"
