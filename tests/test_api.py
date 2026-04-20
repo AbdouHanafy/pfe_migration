@@ -102,8 +102,11 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
     def fake_ensure_namespace(namespace):
         calls.append(("namespace", namespace))
 
-    def fake_normalize(path, fmt):
+    def fake_normalize(path, fmt, progress_callback=None):
         calls.append(("normalize", path, fmt))
+        if progress_callback:
+            progress_callback("Conversion progress: 1%")
+            progress_callback("Conversion progress: 100%")
         return "./data/test.qcow2"
 
     class FakeDvResult:
@@ -117,8 +120,11 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
         calls.append(("http-import", image_path, dv_name, size, namespace))
         return FakeDvResult()
 
-    def fake_wait(namespace, dv_name):
+    def fake_wait(namespace, dv_name, progress_callback=None):
         calls.append(("wait", namespace, dv_name))
+        if progress_callback:
+            progress_callback("Import progress: 50.0%")
+            progress_callback("Import progress: 100.0%")
         return {"status": {"phase": "Succeeded"}}
 
     def fake_manifest(**kwargs):
@@ -157,6 +163,8 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
 
     status = await get_migration_status(response["job_id"])
     assert status["status"] == "completed"
+    assert any("Conversion progress: 1%" in entry["message"] for entry in status["logs"])
+    assert any("Import progress: 50.0%" in entry["message"] for entry in status["logs"])
     assert [step["name"] for step in status["steps"]] == [
         "namespace",
         "conversion",

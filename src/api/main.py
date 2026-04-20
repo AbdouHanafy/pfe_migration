@@ -341,6 +341,7 @@ def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, na
     try:
         job_store.update_status(job_id, "running")
         job_store.add_log(job_id, f"Starting OpenShift migration in namespace '{namespace}' with import mode '{req.import_mode}'.")
+        progress_logger = lambda message: job_store.add_log(job_id, message)
 
         job_store.add_step(job_id, "namespace", "running")
         job_store.add_log(job_id, f"Ensuring namespace '{namespace}' exists.")
@@ -350,10 +351,18 @@ def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, na
         job_store.add_step(job_id, "conversion", "running")
         if (req.import_mode or "http").lower() == "upload":
             job_store.add_log(job_id, f"Preparing disk '{req.source_disk_path}' for upload mode.")
-            image_path = convert_disk_if_needed(req.source_disk_path, req.source_disk_format)
+            image_path = convert_disk_if_needed(
+                req.source_disk_path,
+                req.source_disk_format,
+                progress_callback=progress_logger
+            )
         else:
             job_store.add_log(job_id, f"Normalizing disk '{req.source_disk_path}' for HTTP import mode.")
-            image_path = normalize_disk_for_http_import(req.source_disk_path, req.source_disk_format)
+            image_path = normalize_disk_for_http_import(
+                req.source_disk_path,
+                req.source_disk_format,
+                progress_callback=progress_logger
+            )
         job_store.add_log(job_id, f"Disk ready at '{image_path}'.")
         job_store.finish_last_step(job_id, "completed")
 
@@ -383,7 +392,11 @@ def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, na
         if import_mode != "upload":
             job_store.add_step(job_id, "wait-for-import", "running")
             job_store.add_log(job_id, f"Waiting for DataVolume '{dv_name}' to reach 'Succeeded'.")
-            wait_for_data_volume(namespace=namespace, dv_name=dv_name)
+            wait_for_data_volume(
+                namespace=namespace,
+                dv_name=dv_name,
+                progress_callback=progress_logger
+            )
             job_store.add_log(job_id, f"DataVolume '{dv_name}' import succeeded.")
             job_store.finish_last_step(job_id, "completed")
 

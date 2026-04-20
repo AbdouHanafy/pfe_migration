@@ -3,12 +3,13 @@ OpenShift/KubeVirt helpers for real migration steps.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 import os
 import shutil
 import subprocess
 import json
 import math
+import re
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -19,6 +20,7 @@ from src.config import config
 SUPPORTED_BOOT_FIRMWARE = {"auto", "bios", "uefi", "efi"}
 SUPPORTED_DISK_BUS = {"auto", "virtio", "scsi", "sata"}
 PVC_FILESYSTEM_OVERHEAD_RATIO = 0.06
+ProgressCallback = Callable[[str], None]
 
 
 @dataclass
@@ -49,6 +51,42 @@ def _run(cmd: list[str]) -> Tuple[int, str, str]:
         check=False
     )
     return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def _run_qemu_convert_with_progress(cmd: list[str], progress_callback: ProgressCallback | None = None) -> Tuple[int, str, str]:
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    stderr_parts: list[str] = []
+    progress_buffer = ""
+    last_reported_percent = -1
+
+    while True:
+        chunk = process.stderr.read(1)
+        if chunk == "" and process.poll() is not None:
+            break
+        if not chunk:
+            continue
+        stderr_parts.append(chunk)
+        progress_buffer += chunk
+        matches = re.findall(r"\(\s*([0-9]+(?:\.[0-9]+)?)\/100%\)", progress_buffer)
+        if matches:
+            try:
+                percent = int(float(matches[-1]))
+            except ValueError:
+                percent = last_reported_percent
+            if progress_callback and percent > last_reported_percent:
+                progress_callback(f"Conversion progress: {percent}%")
+                last_reported_percent = percent
+            if len(progress_buffer) > 128:
+                progress_buffer = progress_buffer[-128:]
+
+    stdout = process.stdout.read() if process.stdout else ""
+    stderr = "".join(stderr_parts)
+    return process.wait(), stdout.strip(), stderr.strip()
 
 
 def check_tools() -> Dict[str, bool]:
@@ -220,7 +258,7 @@ def ensure_upload_pvc(namespace: str, pvc_name: str, size: str) -> None:
         raise RuntimeError(f"PVC '{pvc_name}' was not bound in time: {err or out}")
 
 
-def convert_disk_if_needed(source_path: str, source_format: str) -> str:
+def convert_disk_if_needed(source_path: str, source_format: str, progress_callback: ProgressCallback | None = None) -> str:
     source_format = (source_format or "").lower()
     if source_format in ("qcow2", "raw"):
         return source_path
@@ -230,17 +268,18 @@ def convert_disk_if_needed(source_path: str, source_format: str) -> str:
 
     cmd = [
         "qemu-img", "convert",
+        "-p",
         "-O", "qcow2",
         source_path,
         target_path
     ]
-    code, out, err = _run(cmd)
+    code, out, err = _run_qemu_convert_with_progress(cmd, progress_callback=progress_callback)
     if code != 0:
         raise RuntimeError(f"Disk conversion failed: {err or out}")
     return target_path
 
 
-def normalize_disk_for_http_import(source_path: str, source_format: str) -> str:
+def normalize_disk_for_http_import(source_path: str, source_format: str, progress_callback: ProgressCallback | None = None) -> str:
     normalized_format = (source_format or "").lower()
     if normalized_format == "qcow2":
         source = Path(source_path)
@@ -254,11 +293,12 @@ def normalize_disk_for_http_import(source_path: str, source_format: str) -> str:
     target_path = _build_import_target_path(source_path)
     cmd = [
         "qemu-img", "convert",
+        "-p",
         "-O", "qcow2",
         source_path,
         target_path
     ]
-    code, out, err = _run(cmd)
+    code, out, err = _run_qemu_convert_with_progress(cmd, progress_callback=progress_callback)
     if code != 0:
         raise RuntimeError(f"Disk normalization failed: {err or out}")
     return target_path
@@ -350,7 +390,12 @@ def create_data_volume_http(image_path: str, dv_name: str, size: str, namespace:
     )
 
 
-def wait_for_data_volume(namespace: str, dv_name: str, timeout_seconds: int = 900) -> Dict:
+def wait_for_data_volume(
+    namespace: str,
+    dv_name: str,
+    timeout_seconds: int = 900,
+    progress_callback: ProgressCallback | None = None
+) -> Dict:
     deadline = time.time() + timeout_seconds
     last_phase = ""
     last_progress = ""
@@ -366,6 +411,11 @@ def wait_for_data_volume(namespace: str, dv_name: str, timeout_seconds: int = 90
         status = payload.get("status", {})
         phase = status.get("phase", "")
         progress = status.get("progress", "")
+        if progress_callback:
+            if phase and phase != last_phase:
+                progress_callback(f"Import phase: {phase}")
+            if progress and progress != last_progress:
+                progress_callback(f"Import progress: {progress}")
         if phase == "Succeeded":
             return payload
         if phase in {"Failed", "Unknown"}:
