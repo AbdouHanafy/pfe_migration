@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status, Depends, Header, Query, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from typing import List, Dict, Optional
 import logging
 from datetime import datetime, timezone, timedelta
@@ -31,8 +32,13 @@ from src.monitoring import job_store, build_report
 from src.openshift import (
     check_tools,
     ensure_namespace,
+    build_vm_console_url,
     convert_disk_if_needed,
+    normalize_disk_for_http_import,
     upload_disk,
+    create_data_volume_http,
+    wait_for_data_volume,
+    build_import_url,
     build_vm_manifest,
     apply_manifest
 )
@@ -181,6 +187,7 @@ class OpenShiftMigrationRequest(BaseModel):
     firmware: str = Field("auto", description="auto, bios ou uefi")
     disk_bus: str = Field("auto", description="auto, sata, scsi ou virtio")
     namespace: Optional[str] = Field(None, description="Namespace OpenShift")
+    import_mode: str = Field("http", description="http ou upload")
 
 
 def _sanitize_filename(filename: str) -> str:
@@ -333,25 +340,55 @@ def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, na
     """Execute la migration OpenShift hors du cycle de requete HTTP."""
     try:
         job_store.update_status(job_id, "running")
+        job_store.add_log(job_id, f"Starting OpenShift migration in namespace '{namespace}' with import mode '{req.import_mode}'.")
 
         job_store.add_step(job_id, "namespace", "running")
+        job_store.add_log(job_id, f"Ensuring namespace '{namespace}' exists.")
         ensure_namespace(namespace)
         job_store.finish_last_step(job_id, "completed")
 
         job_store.add_step(job_id, "conversion", "running")
-        image_path = convert_disk_if_needed(req.source_disk_path, req.source_disk_format)
+        if (req.import_mode or "http").lower() == "upload":
+            job_store.add_log(job_id, f"Preparing disk '{req.source_disk_path}' for upload mode.")
+            image_path = convert_disk_if_needed(req.source_disk_path, req.source_disk_format)
+        else:
+            job_store.add_log(job_id, f"Normalizing disk '{req.source_disk_path}' for HTTP import mode.")
+            image_path = normalize_disk_for_http_import(req.source_disk_path, req.source_disk_format)
+        job_store.add_log(job_id, f"Disk ready at '{image_path}'.")
         job_store.finish_last_step(job_id, "completed")
 
-        job_store.add_step(job_id, "upload", "running")
-        upload_result = upload_disk(
-            image_path=image_path,
-            pvc_name=f"{req.target_vm_name}-disk",
-            size=req.pvc_size,
-            namespace=namespace
-        )
+        dv_name = f"{req.target_vm_name}-disk"
+        import_mode = (req.import_mode or "http").lower()
+        if import_mode == "upload":
+            job_store.add_step(job_id, "upload", "running")
+            job_store.add_log(job_id, f"Uploading image '{image_path}' into PVC '{dv_name}'.")
+            upload_result = upload_disk(
+                image_path=image_path,
+                pvc_name=dv_name,
+                size=req.pvc_size,
+                namespace=namespace
+            )
+        else:
+            job_store.add_step(job_id, "http-import", "running")
+            job_store.add_log(job_id, f"Creating HTTP import DataVolume '{dv_name}' from '{image_path}'.")
+            upload_result = create_data_volume_http(
+                image_path=image_path,
+                dv_name=dv_name,
+                size=req.pvc_size,
+                namespace=namespace
+            )
+            job_store.add_log(job_id, f"DataVolume '{dv_name}' created with import URL '{upload_result.import_url}'.")
         job_store.finish_last_step(job_id, "completed")
+
+        if import_mode != "upload":
+            job_store.add_step(job_id, "wait-for-import", "running")
+            job_store.add_log(job_id, f"Waiting for DataVolume '{dv_name}' to reach 'Succeeded'.")
+            wait_for_data_volume(namespace=namespace, dv_name=dv_name)
+            job_store.add_log(job_id, f"DataVolume '{dv_name}' import succeeded.")
+            job_store.finish_last_step(job_id, "completed")
 
         job_store.add_step(job_id, "apply-manifest", "running")
+        job_store.add_log(job_id, f"Creating VirtualMachine '{req.target_vm_name}' using PVC '{upload_result.pvc_name}'.")
         manifest = build_vm_manifest(
             vm_name=req.target_vm_name,
             namespace=namespace,
@@ -364,14 +401,61 @@ def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, na
             source_format=req.source_disk_format
         )
         apply_manifest(manifest)
+        job_store.add_log(job_id, f"VirtualMachine '{req.target_vm_name}' manifest applied successfully.")
         job_store.finish_last_step(job_id, "completed")
 
         job_store.update_status(job_id, "completed")
     except Exception as exc:
+        job_store.add_log(job_id, f"Migration failed: {exc}", level="error")
         job = job_store.get_job(job_id)
         if job and job.steps and job.steps[-1]["ended_at"] is None:
             job_store.finish_last_step(job_id, "failed")
         job_store.update_status(job_id, "failed", str(exc))
+
+
+def _build_openshift_job_response(job, vm_name: str, target_vm_name: str, namespace: str, **extra_fields) -> Dict:
+    vm_console_url = build_vm_console_url(target_vm_name, namespace)
+    response = {
+        "job_id": job.job_id,
+        "vm_name": vm_name,
+        "target_vm_name": target_vm_name,
+        "namespace": namespace,
+        "status": job.status,
+        "vm_console_url": vm_console_url,
+        "vm_resource_path": f"/k8s/ns/{namespace}/kubevirt.io~v1~VirtualMachine/{target_vm_name}"
+    }
+    response.update(extra_fields)
+    return response
+
+
+def _resolve_import_mode(import_mode: str | None) -> str:
+    normalized = (import_mode or "http").strip().lower()
+    if normalized not in {"http", "upload"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="import_mode must be 'http' or 'upload'."
+        )
+    return normalized
+
+
+@app.get("/api/v1/openshift/imports/{filename}")
+async def serve_openshift_import_file(filename: str):
+    imports_dir = Path(config.DATA_DIR) / "imports"
+    file_path = (imports_dir / Path(filename).name).resolve()
+    try:
+        if not file_path.is_relative_to(imports_dir.resolve()):
+            raise ValueError("outside imports dir")
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Import file not found"
+        )
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Import file not found"
+        )
+    return FileResponse(file_path, media_type="application/octet-stream", filename=file_path.name)
 
 @app.on_event("startup")
 async def startup_event():
@@ -690,6 +774,7 @@ async def get_migration_status(job_id: str, _: None = Depends(_require_auth)):
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "steps": job.steps,
+        "logs": job.logs,
         "error": job.error
     }
 
@@ -704,6 +789,7 @@ async def list_migration_jobs(_: None = Depends(_require_auth)):
             "status": job.status,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
+            "logs": job.logs,
             "error": job.error
         }
         for job in jobs
@@ -737,23 +823,46 @@ async def migrate_to_openshift(
         )
 
     namespace = req.namespace or config.OPENSHIFT_NAMESPACE
+    import_mode = _resolve_import_mode(req.import_mode)
+    normalized_path = req.source_disk_path
+    import_url = ""
+    if import_mode == "http":
+        normalized_path = normalize_disk_for_http_import(req.source_disk_path, req.source_disk_format)
+        import_url = build_import_url(normalized_path)
     plan = {
-        "strategy": {"strategy": "openshift-background"},
+        "strategy": {"strategy": f"openshift-{import_mode}"},
         "target_vm_name": req.target_vm_name,
         "namespace": namespace,
-        "source_disk_path": req.source_disk_path,
-        "source_disk_format": req.source_disk_format
+        "source_disk_path": normalized_path,
+        "source_disk_format": req.source_disk_format,
+        "import_mode": import_mode,
+        "import_url": import_url,
+        "vm_console_url": build_vm_console_url(req.target_vm_name, namespace)
     }
     job = job_store.create_job(vm_name, plan)
-    background_tasks.add_task(_run_openshift_migration_job, job.job_id, req, namespace)
+    queued_req = OpenShiftMigrationRequest(
+        source_disk_path=normalized_path,
+        source_disk_format=req.source_disk_format,
+        target_vm_name=req.target_vm_name,
+        pvc_size=req.pvc_size,
+        memory=req.memory,
+        cpu_cores=req.cpu_cores,
+        firmware=req.firmware,
+        disk_bus=req.disk_bus,
+        namespace=namespace,
+        import_mode=import_mode
+    )
+    background_tasks.add_task(_run_openshift_migration_job, job.job_id, queued_req, namespace)
 
-    return {
-        "job_id": job.job_id,
-        "vm_name": vm_name,
-        "target_vm_name": req.target_vm_name,
-        "namespace": namespace,
-        "status": "queued"
-    }
+    return _build_openshift_job_response(
+        job,
+        vm_name,
+        req.target_vm_name,
+        namespace,
+        source_disk_path=normalized_path,
+        import_mode=import_mode,
+        import_url=import_url
+    )
 
 
 @app.post("/api/v1/migration/openshift-upload/{vm_name}")
@@ -769,6 +878,7 @@ async def migrate_uploaded_disk_to_openshift(
     firmware: str = Form("auto"),
     disk_bus: str = Form("auto"),
     namespace: str = Form(""),
+    import_mode: str = Form("http"),
     _: None = Depends(_require_auth)
 ):
     """
@@ -793,6 +903,7 @@ async def migrate_uploaded_disk_to_openshift(
     requested_format = (source_disk_format or "").strip().lower()
     effective_format = detected_format if requested_format in {"", "auto"} else requested_format
     effective_namespace = namespace or config.OPENSHIFT_NAMESPACE
+    effective_import_mode = _resolve_import_mode(import_mode)
 
     req = OpenShiftMigrationRequest(
         source_disk_path=stored_path,
@@ -803,32 +914,42 @@ async def migrate_uploaded_disk_to_openshift(
         cpu_cores=cpu_cores,
         firmware=firmware,
         disk_bus=disk_bus,
-        namespace=effective_namespace
+        namespace=effective_namespace,
+        import_mode=effective_import_mode
     )
 
+    import_url = ""
+    if effective_import_mode == "http":
+        req.source_disk_path = normalize_disk_for_http_import(stored_path, effective_format)
+        import_url = build_import_url(req.source_disk_path)
+
     plan = {
-        "strategy": {"strategy": "openshift-upload"},
+        "strategy": {"strategy": f"openshift-{effective_import_mode}"},
         "target_vm_name": target_vm_name,
         "namespace": effective_namespace,
-        "source_disk_path": stored_path,
+        "source_disk_path": req.source_disk_path,
         "source_disk_format": effective_format,
+        "import_mode": effective_import_mode,
+        "import_url": import_url,
         "uploaded_files": bundle["uploaded_files"],
-        "bundle": bundle
+        "bundle": bundle,
+        "vm_console_url": build_vm_console_url(target_vm_name, effective_namespace)
     }
     job = job_store.create_job(vm_name, plan)
     background_tasks.add_task(_run_openshift_migration_job, job.job_id, req, effective_namespace)
 
-    return {
-        "job_id": job.job_id,
-        "vm_name": vm_name,
-        "target_vm_name": target_vm_name,
-        "namespace": effective_namespace,
-        "source_disk_path": stored_path,
-        "source_disk_format": effective_format,
-        "uploaded_files": bundle["uploaded_files"],
-        "bundle": bundle,
-        "status": "queued"
-    }
+    return _build_openshift_job_response(
+        job,
+        vm_name,
+        target_vm_name,
+        effective_namespace,
+        source_disk_path=req.source_disk_path,
+        source_disk_format=effective_format,
+        import_mode=effective_import_mode,
+        import_url=import_url,
+        uploaded_files=bundle["uploaded_files"],
+        bundle=bundle
+    )
 
 if __name__ == "__main__":
     import uvicorn

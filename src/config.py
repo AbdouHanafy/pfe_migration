@@ -66,6 +66,8 @@ class Config:
 
     # OpenShift / KubeVirt
     OPENSHIFT_NAMESPACE = os.getenv("OPENSHIFT_NAMESPACE", "vm-migration")
+    OPENSHIFT_CONSOLE_URL = os.getenv("OPENSHIFT_CONSOLE_URL", "")
+    OPENSHIFT_IMPORT_BASE_URL = os.getenv("OPENSHIFT_IMPORT_BASE_URL", "")
     OPENSHIFT_UPLOADPROXY_URL = os.getenv("OPENSHIFT_UPLOADPROXY_URL", "")
     OPENSHIFT_INSECURE_UPLOAD = os.getenv("OPENSHIFT_INSECURE_UPLOAD", "true").lower() == "true"
     ENABLE_REAL_MIGRATION = os.getenv("ENABLE_REAL_MIGRATION", "false").lower() == "true"

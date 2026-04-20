@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createApi } from '../services/api'
 import { useLogger } from '../hooks/useLogger'
 import { useAuth } from '../hooks/useAuth'
@@ -72,8 +72,47 @@ const buildMigrationGate = (planData, vmName) => {
   }
 }
 
+const formatJobLogLine = (entry) => {
+  if (!entry) return ''
+  const timestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '--:--:--'
+  const level = (entry.level || 'info').toUpperCase()
+  return `${timestamp} [${level}] ${entry.message || ''}`
+}
+
+const buildOpenShiftPayload = ({
+  sourceDiskPath,
+  sourceDiskFormat,
+  targetVmName,
+  pvcSize,
+  memory,
+  cpuCores,
+  firmware,
+  diskBus,
+  namespace,
+  importMode,
+}) => ({
+  source_disk_path: sourceDiskPath,
+  source_disk_format: sourceDiskFormat || 'vmdk',
+  target_vm_name: targetVmName,
+  pvc_size: pvcSize || '20Gi',
+  memory: memory || '2Gi',
+  cpu_cores: parseInt(cpuCores, 10) || 2,
+  firmware: firmware || 'auto',
+  disk_bus: diskBus || 'auto',
+  namespace: namespace || 'vm-migration',
+  import_mode: importMode || 'http',
+})
+
+const estimateMigrationTime = (importMode, hasLocalFiles) => {
+  if (importMode === 'upload') return 'This can take several minutes and may be slower for large disks.'
+  if (hasLocalFiles) return 'Please wait a few minutes while the backend converts the disk, imports it, and creates the VM.'
+  return 'Please wait a few minutes while the backend imports the disk and creates the VM.'
+}
+
 const HomePage = () => {
-  const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE || 'http://localhost:8000')
+  const [apiBase, setApiBase] = useState(
+    import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+  )
   const [vms, setVms] = useState([])
   const [vmName, setVmName] = useState('')
   const [discoverySource, setDiscoverySource] = useState('kvm')
@@ -105,14 +144,37 @@ const HomePage = () => {
   const [firmware, setFirmware] = useState('auto')
   const [diskBus, setDiskBus] = useState('auto')
   const [namespace, setNamespace] = useState('vm-migration')
+  const [importMode, setImportMode] = useState('http')
+  const [migrationNotice, setMigrationNotice] = useState('')
 
   const { token } = useAuth()
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
   const { logs, pushLog } = useLogger()
   const migrationGate = useMemo(() => buildMigrationGate(analysis, vmName), [analysis, vmName])
+  const canStartRealMigration = migrationGate.ready && Boolean(targetVmName) && (diskFiles.length > 0 || sourceDiskPath)
+  const lastNotifiedStatusRef = useRef('')
 
   const setActionLoading = (key, value) => {
     setLoading((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const openVmConsole = (consoleUrl) => {
+    if (!consoleUrl) return
+    window.open(consoleUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  const notifyUser = async (title, body) => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return
+    if (Notification.permission === 'default') {
+      try {
+        await Notification.requestPermission()
+      } catch {
+        return
+      }
+    }
+    if (Notification.permission === 'granted') {
+      new Notification(title, { body })
+    }
   }
 
   useEffect(() => {
@@ -126,6 +188,11 @@ const HomePage = () => {
 
         if (data.status === 'completed' || data.status === 'failed') {
           pushLog(`Job ${jobId} finished: ${data.status}`)
+          setMigrationNotice(
+            data.status === 'completed'
+              ? `Migration finished for ${data.vm_name || targetVmName}.`
+              : `Migration failed for ${data.vm_name || targetVmName}. Check the logs below.`
+          )
         }
       } catch (err) {
         const msg = err.message || 'Unknown error'
@@ -135,7 +202,20 @@ const HomePage = () => {
     }, 3000)
 
     return () => clearInterval(interval)
-  }, [api, jobId, migration, pushLog])
+  }, [api, jobId, migration, pushLog, targetVmName])
+
+  useEffect(() => {
+    if (!jobId || !migration?.status) return
+    const key = `${jobId}:${migration.status}`
+    if (lastNotifiedStatusRef.current === key) return
+    if (migration.status === 'completed') {
+      lastNotifiedStatusRef.current = key
+      notifyUser('Migration completed', `${migration.vm_name || targetVmName || 'VM'} is ready on OpenShift.`)
+    } else if (migration.status === 'failed') {
+      lastNotifiedStatusRef.current = key
+      notifyUser('Migration failed', `${migration.vm_name || targetVmName || 'VM'} failed. Open the logs for details.`)
+    }
+  }, [jobId, migration, targetVmName])
 
   const handleError = (action, err) => {
     const msg = err.message || 'Unknown error'
@@ -234,9 +314,53 @@ const HomePage = () => {
 
   const onStart = async () => {
     if (!vmName) return pushLog('VM name required')
+    if (canStartRealMigration) {
+      return submitOpenShiftMigration({
+        loadingKey: 'start',
+        actionLabel: 'Start migration',
+        redirectToConsole: true,
+      })
+    }
     setError(null)
     setActionLoading('start', true)
     try {
+      if (diskFiles.length > 0 || vmSource === 'local-browser-vmware') {
+        const localJobId = `local-${Date.now()}`
+        const localMigration = {
+          job_id: localJobId,
+          vm_name: vmName,
+          status: 'completed',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          plan: {
+            analysis: analysis?.analysis || analysis,
+            conversion_plan: analysis?.conversion_plan || null,
+            strategy: analysis?.strategy || { strategy: 'conversion' },
+          },
+          steps: [
+            {
+              name: 'browser-precheck',
+              status: 'completed',
+              logs: [{ timestamp: new Date().toISOString(), level: 'info', message: 'Local VMware bundle analyzed in the browser.' }],
+            },
+            {
+              name: 'simulated-migration',
+              status: 'completed',
+              logs: [{ timestamp: new Date().toISOString(), level: 'info', message: 'Simulation completed locally because the backend cannot rediscover browser-only files.' }],
+            },
+          ],
+          logs: [
+            { timestamp: new Date().toISOString(), level: 'info', message: `Local simulated migration prepared for ${vmName}.` },
+          ],
+          error: null,
+          note: 'Local VMware bundle: simulated start handled in the frontend because the backend cannot rediscover browser-only files.',
+        }
+        setMigration(localMigration)
+        setJobId(localJobId)
+        pushLog(`Local simulated migration prepared for ${vmName} (job: ${localJobId})`)
+        return
+      }
+
       const data = await api.fetchJson(`/api/v1/migration/start/${vmName}?source=${vmSource}`, {
         method: 'POST',
       })
@@ -280,7 +404,11 @@ const HomePage = () => {
     }
   }
 
-  const onOpenShift = async () => {
+  const submitOpenShiftMigration = async ({
+    loadingKey,
+    actionLabel,
+    redirectToConsole = false,
+  }) => {
     if (!vmName) return pushLog('VM name required (source label)')
     if (!migrationGate.ready) return pushLog(migrationGate.message)
     if (!targetVmName) return pushLog('Target VM name is required')
@@ -289,8 +417,11 @@ const HomePage = () => {
     }
 
     setError(null)
-    setActionLoading('openshift', true)
+    setActionLoading(loadingKey, true)
     try {
+      const waitMessage = estimateMigrationTime(importMode, diskFiles.length > 0)
+      setMigrationNotice(waitMessage)
+      pushLog(waitMessage)
       let data
 
       if (diskFiles.length > 0) {
@@ -306,23 +437,25 @@ const HomePage = () => {
         formData.append('firmware', firmware || 'auto')
         formData.append('disk_bus', diskBus || 'auto')
         formData.append('namespace', namespace || 'vm-migration')
+        formData.append('import_mode', importMode || 'http')
 
         data = await api.fetchJson(`/api/v1/migration/openshift-upload/${vmName}`, {
           method: 'POST',
           body: formData,
         })
       } else {
-        const payload = {
-          source_disk_path: sourceDiskPath,
-          source_disk_format: sourceDiskFormat || 'vmdk',
-          target_vm_name: targetVmName,
-          pvc_size: pvcSize || '20Gi',
-          memory: memory || '2Gi',
-          cpu_cores: parseInt(cpuCores, 10) || 2,
-          firmware: firmware || 'auto',
-          disk_bus: diskBus || 'auto',
-          namespace: namespace || 'vm-migration',
-        }
+        const payload = buildOpenShiftPayload({
+          sourceDiskPath,
+          sourceDiskFormat,
+          targetVmName,
+          pvcSize,
+          memory,
+          cpuCores,
+          firmware,
+          diskBus,
+          namespace,
+          importMode,
+        })
 
         data = await api.fetchJson(`/api/v1/migration/openshift/${vmName}`, {
           method: 'POST',
@@ -333,19 +466,41 @@ const HomePage = () => {
 
       setOpenShiftResult(data)
       setJobId(data.job_id || '')
-      setMigration(data.job_id ? { job_id: data.job_id, status: data.status } : null)
-      pushLog(`OpenShift migration submitted for ${targetVmName}`)
+      setMigration(data.job_id ? { job_id: data.job_id, status: data.status, vm_console_url: data.vm_console_url } : null)
+      pushLog(`${actionLabel} submitted for ${targetVmName}`)
+      pushLog(`Job ${data.job_id} queued. You can wait a few minutes and watch the live logs below.`)
+
+      if (redirectToConsole && data.vm_console_url) {
+        pushLog(`Opening OpenShift VM page for ${targetVmName}`)
+        openVmConsole(data.vm_console_url)
+      }
     } catch (err) {
-      handleError('OpenShift migration', err)
+      handleError(actionLabel, err)
     } finally {
-      setActionLoading('openshift', false)
+      setActionLoading(loadingKey, false)
     }
+  }
+
+  const onOpenShift = async () => {
+    await submitOpenShiftMigration({
+      loadingKey: 'openshift',
+      actionLabel: 'OpenShift migration',
+      redirectToConsole: false,
+    })
   }
 
   const btnLabel = (action) => {
     if (loading[action]) return 'Loading...'
     return null
   }
+
+  const startButtonLabel = () => {
+    if (loading.start) return 'Loading...'
+    if (canStartRealMigration) return 'Start And Open VM'
+    return 'Start (Simulated)'
+  }
+
+  const renderedJobLogs = migration?.logs || []
 
   return (
     <div className="app">
@@ -449,7 +604,7 @@ const HomePage = () => {
           actions={
             <>
               <Button onClick={onStart} disabled={loading.start}>
-                {btnLabel('start') || 'Start (Simulated)'}
+                {startButtonLabel()}
               </Button>
               <Input
                 placeholder="job id"
@@ -466,6 +621,25 @@ const HomePage = () => {
           }
         >
           <JsonBlock data={migration} />
+          {openShiftResult?.vm_console_url ? (
+            <div className="row">
+              <Button variant="ghost" onClick={() => openVmConsole(openShiftResult.vm_console_url)}>
+                Open VM In OpenShift
+              </Button>
+            </div>
+          ) : null}
+          {migrationNotice ? <p className="status-note">{migrationNotice}</p> : null}
+          <div className="step-log">
+            {renderedJobLogs.length === 0 ? (
+              <div className="step-log-empty">No job logs yet.</div>
+            ) : (
+              renderedJobLogs.map((entry, index) => (
+                <div key={`${entry.timestamp || 'log'}-${index}`} className={`step-log-line level-${entry.level || 'info'}`}>
+                  {formatJobLogLine(entry)}
+                </div>
+              ))
+            )}
+          </div>
         </Card>
 
         <Card
@@ -482,38 +656,75 @@ const HomePage = () => {
             Precheck: <strong>{migrationGate.message}</strong>
           </p>
           <FieldGrid>
-            <Input
-              type="file"
-              multiple
-              accept=".vmx,.vmdk,.qcow2,.img,.raw"
-              onChange={(e) => {
-                const files = Array.from(e.target.files || [])
-                setDiskFiles(files)
+            <label className="field">
+              <span className="field-label">Local VM Files</span>
+              <Input
+                type="file"
+                multiple
+                accept=".vmx,.vmdk,.qcow2,.img,.raw"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || [])
+                  setDiskFiles(files)
 
-                if (files.length === 0) return
+                  if (files.length === 0) return
 
-                const bundle = inferVmwareBundle(files)
+                  const bundle = inferVmwareBundle(files)
 
-                setVmName((current) => current || bundle.inferredName)
-                setTargetVmName((current) => current || bundle.inferredName)
-                setSourceDiskFormat(bundle.inferredFormat)
-                setSourceDiskPath('')
-              }}
-            />
-            <Input
-              placeholder="/path/on/bastion/source.vmdk"
-              value={sourceDiskPath}
-              onChange={(e) => setSourceDiskPath(e.target.value)}
-            />
-            <Input placeholder="auto | vmdk | qcow2 | raw" value={sourceDiskFormat} onChange={(e) => setSourceDiskFormat(e.target.value)} />
-            <Input placeholder="target vm name" value={targetVmName} onChange={(e) => setTargetVmName(e.target.value)} />
-            <Input placeholder="20Gi" value={pvcSize} onChange={(e) => setPvcSize(e.target.value)} />
-            <Input placeholder="2Gi" value={memory} onChange={(e) => setMemory(e.target.value)} />
-            <Input type="number" placeholder="2" value={cpuCores} onChange={(e) => setCpuCores(e.target.value)} />
-            <Input placeholder="auto | bios | uefi" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
-            <Input placeholder="auto | sata | scsi | virtio" value={diskBus} onChange={(e) => setDiskBus(e.target.value)} />
-            <Input placeholder="vm-migration" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
+                  setVmName((current) => current || bundle.inferredName)
+                  setTargetVmName((current) => current || bundle.inferredName)
+                  setSourceDiskFormat(bundle.inferredFormat)
+                  setSourceDiskPath('')
+                }}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Bastion Disk Path</span>
+              <Input
+                placeholder="/path/on/bastion/source.vmdk"
+                value={sourceDiskPath}
+                onChange={(e) => setSourceDiskPath(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Disk Format</span>
+              <Input placeholder="auto | vmdk | qcow2 | raw" value={sourceDiskFormat} onChange={(e) => setSourceDiskFormat(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="field-label">Target VM Name</span>
+              <Input placeholder="abdou-os" value={targetVmName} onChange={(e) => setTargetVmName(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="field-label">PVC Size</span>
+              <Input placeholder="20Gi" value={pvcSize} onChange={(e) => setPvcSize(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="field-label">RAM</span>
+              <Input placeholder="2Gi" value={memory} onChange={(e) => setMemory(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="field-label">vCPU</span>
+              <Input type="number" placeholder="2" value={cpuCores} onChange={(e) => setCpuCores(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="field-label">Firmware</span>
+              <Input placeholder="auto | bios | uefi" value={firmware} onChange={(e) => setFirmware(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="field-label">Disk Bus</span>
+              <Input placeholder="auto | sata | scsi | virtio" value={diskBus} onChange={(e) => setDiskBus(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="field-label">Namespace</span>
+              <Input placeholder="vm-migration" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
+            </label>
+            <label className="field">
+              <span className="field-label">Import Mode</span>
+              <Input placeholder="http | upload" value={importMode} onChange={(e) => setImportMode(e.target.value)} />
+            </label>
           </FieldGrid>
+          <p className="hint">
+            Estimated time: <strong>{estimateMigrationTime(importMode, diskFiles.length > 0)}</strong>
+          </p>
           {diskFiles.length > 0 ? (
             (() => {
               const bundle = inferVmwareBundle(diskFiles)

@@ -94,26 +94,32 @@ async def test_vmware_esxi_discovery_and_plan(monkeypatch):
 @pytest.mark.asyncio
 async def test_migrate_to_openshift_runs_in_background(monkeypatch):
     monkeypatch.setattr(config, "ENABLE_REAL_MIGRATION", True)
+    monkeypatch.setattr(config, "OPENSHIFT_CONSOLE_URL", "https://console-openshift.example")
+    monkeypatch.setattr(config, "OPENSHIFT_IMPORT_BASE_URL", "http://10.9.21.90:8000")
 
     calls = []
 
     def fake_ensure_namespace(namespace):
         calls.append(("namespace", namespace))
 
-    def fake_convert(path, fmt):
-        calls.append(("convert", path, fmt))
+    def fake_normalize(path, fmt):
+        calls.append(("normalize", path, fmt))
         return "./data/test.qcow2"
 
-    class FakeUploadResult:
+    class FakeDvResult:
         pvc_name = "target-vm-disk"
         namespace = "vm-migration"
         image_path = "./data/test.qcow2"
         size = "20Gi"
-        uploadproxy_url = "https://uploadproxy.example"
+        import_url = "http://10.9.21.90:8000/api/v1/openshift/imports/test.qcow2"
 
-    def fake_upload(image_path, pvc_name, size, namespace):
-        calls.append(("upload", image_path, pvc_name, size, namespace))
-        return FakeUploadResult()
+    def fake_import(image_path, dv_name, size, namespace):
+        calls.append(("http-import", image_path, dv_name, size, namespace))
+        return FakeDvResult()
+
+    def fake_wait(namespace, dv_name):
+        calls.append(("wait", namespace, dv_name))
+        return {"status": {"phase": "Succeeded"}}
 
     def fake_manifest(**kwargs):
         calls.append(("manifest", kwargs["vm_name"], kwargs["namespace"], kwargs["pvc_name"]))
@@ -123,8 +129,10 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
         calls.append(("apply", manifest["kind"]))
 
     monkeypatch.setattr("src.api.main.ensure_namespace", fake_ensure_namespace)
-    monkeypatch.setattr("src.api.main.convert_disk_if_needed", fake_convert)
-    monkeypatch.setattr("src.api.main.upload_disk", fake_upload)
+    monkeypatch.setattr("src.api.main.normalize_disk_for_http_import", fake_normalize)
+    monkeypatch.setattr("src.api.main.build_import_url", lambda path: "http://10.9.21.90:8000/api/v1/openshift/imports/test.qcow2")
+    monkeypatch.setattr("src.api.main.create_data_volume_http", fake_import)
+    monkeypatch.setattr("src.api.main.wait_for_data_volume", fake_wait)
     monkeypatch.setattr("src.api.main.build_vm_manifest", fake_manifest)
     monkeypatch.setattr("src.api.main.apply_manifest", fake_apply)
 
@@ -138,7 +146,12 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
     response = await migrate_to_openshift("source-vm", request, background_tasks)
     assert response["status"] == "queued"
     assert response["job_id"]
-    assert calls == []
+    assert response["import_mode"] == "http"
+    assert response["import_url"] == "http://10.9.21.90:8000/api/v1/openshift/imports/test.qcow2"
+    assert response["vm_console_url"] == (
+        "https://console-openshift.example/k8s/ns/vm-migration/kubevirt.io~v1~VirtualMachine/target-vm"
+    )
+    assert calls == [("normalize", "/tmp/source.vmdk", "vmdk")]
 
     await background_tasks()
 
@@ -147,13 +160,16 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
     assert [step["name"] for step in status["steps"]] == [
         "namespace",
         "conversion",
-        "upload",
+        "http-import",
+        "wait-for-import",
         "apply-manifest"
     ]
     assert [call[0] for call in calls] == [
+        "normalize",
         "namespace",
-        "convert",
-        "upload",
+        "normalize",
+        "http-import",
+        "wait",
         "manifest",
         "apply"
     ]

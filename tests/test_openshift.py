@@ -2,7 +2,7 @@
 Tests pour le profil de boot KubeVirt / OpenShift.
 """
 
-from src.openshift.client import build_vm_manifest
+from src.openshift.client import build_vm_manifest, build_vm_console_url, resolve_upload_size
 
 
 def test_build_vm_manifest_auto_prefers_sata_and_bios_for_vmdk():
@@ -45,3 +45,24 @@ def test_build_vm_manifest_explicit_uefi_and_virtio():
 
     assert domain["firmware"]["bootloader"] == {"efi": {"secureBoot": False}}
     assert disk["disk"]["bus"] == "virtio"
+
+
+def test_resolve_upload_size_uses_virtual_disk_size_with_filesystem_overhead(monkeypatch):
+    monkeypatch.setattr(
+        "src.openshift.client._qemu_img_info",
+        lambda path: {
+            "virtual-size": 15 * 1024 ** 3,
+            "actual-size": int(10.85 * 1024 ** 3),
+        },
+    )
+
+    assert resolve_upload_size("/tmp/test-converted.qcow2", "12Gi") == "16Gi"
+
+
+def test_build_vm_console_url_uses_configured_console_base(monkeypatch):
+    monkeypatch.setattr("src.openshift.client.config.OPENSHIFT_CONSOLE_URL", "https://console-openshift.example")
+
+    assert (
+        build_vm_console_url("test-vm", "vm-migration")
+        == "https://console-openshift.example/k8s/ns/vm-migration/kubevirt.io~v1~VirtualMachine/test-vm"
+    )

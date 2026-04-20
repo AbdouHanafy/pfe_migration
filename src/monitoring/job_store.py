@@ -20,6 +20,7 @@ class MigrationJob:
     updated_at: str
     plan: Dict = field(default_factory=dict)
     steps: List[Dict] = field(default_factory=list)
+    logs: List[Dict] = field(default_factory=list)
     error: Optional[str] = None
 
 class JobStore:
@@ -38,10 +39,16 @@ class JobStore:
             created_at=now,
             updated_at=now,
             plan=plan,
-            steps=[]
+            steps=[],
+            logs=[]
         )
         with self._lock:
             self._jobs[job_id] = job
+            job.logs.append({
+                "timestamp": now,
+                "level": "info",
+                "message": f"Job queued for VM '{vm_name}'."
+            })
         return job
 
     def get_job(self, job_id: str) -> Optional[MigrationJob]:
@@ -58,7 +65,13 @@ class JobStore:
             if not job:
                 return
             job.status = status
-            job.updated_at = _now_iso()
+            now = _now_iso()
+            job.updated_at = now
+            job.logs.append({
+                "timestamp": now,
+                "level": "error" if error else "info",
+                "message": f"Job status changed to '{status}'." + (f" Error: {error}" if error else "")
+            })
             if error:
                 job.error = error
 
@@ -67,21 +80,50 @@ class JobStore:
             job = self._jobs.get(job_id)
             if not job:
                 return
+            now = _now_iso()
             job.steps.append({
                 "name": name,
                 "status": status,
-                "started_at": _now_iso(),
-                "ended_at": None
+                "started_at": now,
+                "ended_at": None,
+                "logs": []
             })
-            job.updated_at = _now_iso()
+            job.updated_at = now
+            job.logs.append({
+                "timestamp": now,
+                "level": "info",
+                "message": f"Step '{name}' started."
+            })
 
     def finish_last_step(self, job_id: str, status: str) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or not job.steps:
                 return
+            now = _now_iso()
             job.steps[-1]["status"] = status
-            job.steps[-1]["ended_at"] = _now_iso()
-            job.updated_at = _now_iso()
+            job.steps[-1]["ended_at"] = now
+            job.updated_at = now
+            job.logs.append({
+                "timestamp": now,
+                "level": "info" if status == "completed" else "error",
+                "message": f"Step '{job.steps[-1]['name']}' finished with status '{status}'."
+            })
+
+    def add_log(self, job_id: str, message: str, level: str = "info") -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            now = _now_iso()
+            entry = {
+                "timestamp": now,
+                "level": level,
+                "message": message
+            }
+            job.logs.append(entry)
+            if job.steps:
+                job.steps[-1].setdefault("logs", []).append(entry)
+            job.updated_at = now
 
 job_store = JobStore()

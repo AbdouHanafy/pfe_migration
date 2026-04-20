@@ -12,7 +12,7 @@ const Register = () => {
   const [success, setSuccess] = useState('')
   const navigate = useNavigate()
 
-  const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+  const apiBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
   const onSubmit = async (e) => {
     e.preventDefault()

@@ -17,6 +17,7 @@ def build_report(job: MigrationJob) -> Dict:
         "updated_at": job.updated_at,
         "error": job.error,
         "steps": job.steps,
+        "logs": job.logs,
         "analysis": job.plan.get("analysis", {}),
         "conversion_plan": job.plan.get("conversion_plan", {}),
         "strategy": job.plan.get("strategy", {})

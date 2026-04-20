@@ -13,7 +13,7 @@ const Login = () => {
   const navigate = useNavigate()
   const { setToken } = useAuth()
 
-  const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+  const apiBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
   const onSubmit = async (e) => {
     e.preventDefault()
