@@ -488,13 +488,10 @@ def build_vm_manifest(
         "kind": "VirtualMachine",
         "metadata": {
             "name": vm_name,
-            "namespace": namespace,
-            "annotations": {
-                "vm.kubevirt.io/validations": "phase1-boot-profile"
-            }
+            "namespace": namespace
         },
         "spec": {
-            "running": True,
+            "runStrategy": "Always",
             "template": {
                 "metadata": {"labels": {"kubevirt.io/domain": vm_name}},
                 "spec": {

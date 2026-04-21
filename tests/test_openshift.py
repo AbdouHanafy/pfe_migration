@@ -21,6 +21,8 @@ def test_build_vm_manifest_auto_prefers_sata_and_bios_for_vmdk():
     domain = manifest["spec"]["template"]["spec"]["domain"]
     disk = domain["devices"]["disks"][0]
 
+    assert manifest["spec"]["runStrategy"] == "Always"
+    assert "annotations" not in manifest["metadata"]
     assert domain["firmware"]["bootloader"] == {"bios": {}}
     assert disk["disk"]["bus"] == "sata"
     assert disk["bootOrder"] == 1
