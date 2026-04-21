@@ -23,6 +23,7 @@ from src.api.main import (
     OpenShiftMigrationRequest,
     _build_uploaded_bundle_summary
 )
+from src.config import PROJECT_ROOT
 
 def _mock_vm_details(name: str):
     return {
@@ -221,6 +222,14 @@ def test_build_uploaded_bundle_summary_rejects_missing_vmdk_extent(tmp_path):
         _build_uploaded_bundle_summary(tmp_path, ["test.vmdk"], "fallback-name")
 
     assert "Bundle VMware incomplet" in str(exc_info.value)
+
+
+def test_data_dir_is_absolute_under_project_root():
+    data_dir = Path(config.DATA_DIR)
+    project_root = PROJECT_ROOT.resolve()
+
+    assert data_dir.is_absolute()
+    assert data_dir == project_root / "data"
 
 
 @pytest.mark.asyncio

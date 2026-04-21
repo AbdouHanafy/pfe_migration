@@ -3,10 +3,21 @@ Configuration du projet PFE Migration
 """
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from typing import Dict, Any, List
 
 load_dotenv()
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_project_path(raw_path: str, default_relative: str) -> str:
+    candidate = Path((raw_path or "").strip() or default_relative).expanduser()
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    return str(candidate.resolve())
 
 class Config:
     """Configuration de l'application"""
@@ -57,8 +68,8 @@ class Config:
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./migration.db")
     
     # Paths
-    LOG_DIR = os.getenv("LOG_DIR", "./logs")
-    DATA_DIR = os.getenv("DATA_DIR", "./data")
+    LOG_DIR = _resolve_project_path(os.getenv("LOG_DIR", ""), "logs")
+    DATA_DIR = _resolve_project_path(os.getenv("DATA_DIR", ""), "data")
     
     # Migration
     DEFAULT_MIGRATION_STRATEGY = "auto"  # auto, direct, conversion

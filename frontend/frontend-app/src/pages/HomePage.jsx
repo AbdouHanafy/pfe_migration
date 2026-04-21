@@ -109,6 +109,8 @@ const estimateMigrationTime = (importMode, hasLocalFiles) => {
   return 'Please wait a few minutes while the backend imports the disk and creates the VM.'
 }
 
+const STORAGE_KEY = 'migration-control-room-state'
+
 const HomePage = () => {
   const [apiBase, setApiBase] = useState(
     import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000'
@@ -153,8 +155,55 @@ const HomePage = () => {
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
   const { logs, pushLog } = useLogger()
   const migrationGate = useMemo(() => buildMigrationGate(analysis, vmName), [analysis, vmName])
-  const canStartRealMigration = migrationGate.ready && Boolean(targetVmName) && (diskFiles.length > 0 || sourceDiskPath)
+  const trimmedSourceDiskPath = sourceDiskPath.trim()
+  const migrationUsesBastionPath = Boolean(trimmedSourceDiskPath)
+  const canStartRealMigration = migrationGate.ready && Boolean(targetVmName) && (migrationUsesBastionPath || diskFiles.length > 0)
   const lastNotifiedStatusRef = useRef('')
+
+  useEffect(() => {
+    try {
+      const raw = window.sessionStorage.getItem(STORAGE_KEY)
+      if (!raw) return
+      const saved = JSON.parse(raw)
+      if (saved.vmName) setVmName(saved.vmName)
+      if (saved.vmSource) setVmSource(saved.vmSource)
+      if (saved.analysis) setAnalysis(saved.analysis)
+      if (saved.sourceDiskPath) setSourceDiskPath(saved.sourceDiskPath)
+      if (saved.sourceDiskFormat) setSourceDiskFormat(saved.sourceDiskFormat)
+      if (saved.targetVmName) setTargetVmName(saved.targetVmName)
+      if (saved.pvcSize) setPvcSize(saved.pvcSize)
+      if (saved.memory) setMemory(saved.memory)
+      if (saved.cpuCores) setCpuCores(saved.cpuCores)
+      if (saved.firmware) setFirmware(saved.firmware)
+      if (saved.diskBus) setDiskBus(saved.diskBus)
+      if (saved.namespace) setNamespace(saved.namespace)
+      if (saved.importMode) setImportMode(saved.importMode)
+    } catch {
+      // Ignore invalid persisted UI state.
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+        vmName,
+        vmSource,
+        analysis,
+        sourceDiskPath,
+        sourceDiskFormat,
+        targetVmName,
+        pvcSize,
+        memory,
+        cpuCores,
+        firmware,
+        diskBus,
+        namespace,
+        importMode,
+      }))
+    } catch {
+      // Ignore persistence issues.
+    }
+  }, [vmName, vmSource, analysis, sourceDiskPath, sourceDiskFormat, targetVmName, pvcSize, memory, cpuCores, firmware, diskBus, namespace, importMode])
 
   const setActionLoading = (key, value) => {
     setLoading((prev) => ({ ...prev, [key]: value }))
@@ -262,6 +311,10 @@ const HomePage = () => {
 
   const onAnalyze = async () => {
     if (!vmName) return pushLog('VM name required')
+    if (diskFiles.length === 0 && trimmedSourceDiskPath && vmSource === 'kvm') {
+      setError('Analysis: use local VM files for Analyze/Plan, or keep the previous plan. Bastion Disk Path is used for migration, not KVM discovery.')
+      return pushLog('Analyze blocked: bastion path is for migration. Use local VM files for Analyze/Plan.')
+    }
     setError(null)
     setActionLoading('analyze', true)
     try {
@@ -292,6 +345,10 @@ const HomePage = () => {
 
   const onPlan = async () => {
     if (!vmName) return pushLog('VM name required')
+    if (diskFiles.length === 0 && trimmedSourceDiskPath && vmSource === 'kvm') {
+      setError('Plan: use local VM files for Analyze/Plan, or keep the previous plan. Bastion Disk Path is used for migration, not KVM discovery.')
+      return pushLog('Plan blocked: bastion path is for migration. Use local VM files for Analyze/Plan.')
+    }
     setError(null)
     setActionLoading('plan', true)
     try {
@@ -451,19 +508,19 @@ const HomePage = () => {
     if (!vmName) return pushLog('VM name required (source label)')
     if (!migrationGate.ready) return pushLog(migrationGate.message)
     if (!targetVmName) return pushLog('Target VM name is required')
-    if (diskFiles.length === 0 && !sourceDiskPath) {
+    if (diskFiles.length === 0 && !trimmedSourceDiskPath) {
       return pushLog('Select a local disk file or enter a bastion disk path')
     }
 
     setError(null)
     setActionLoading(loadingKey, true)
     try {
-      const waitMessage = estimateMigrationTime(importMode, diskFiles.length > 0)
+      const waitMessage = estimateMigrationTime(importMode, !migrationUsesBastionPath && diskFiles.length > 0)
       setMigrationNotice(waitMessage)
       pushLog(waitMessage)
       let data
 
-      if (diskFiles.length > 0) {
+      if (!migrationUsesBastionPath && diskFiles.length > 0) {
         const formData = new FormData()
         diskFiles.forEach((file) => {
           formData.append('disk_files', file)
@@ -484,7 +541,7 @@ const HomePage = () => {
         })
       } else {
         const payload = buildOpenShiftPayload({
-          sourceDiskPath,
+          sourceDiskPath: trimmedSourceDiskPath,
           sourceDiskFormat,
           targetVmName,
           pvcSize,
@@ -508,6 +565,9 @@ const HomePage = () => {
       setMigration(data.job_id ? { job_id: data.job_id, status: data.status, vm_console_url: data.vm_console_url } : null)
       pushLog(`${actionLabel} submitted for ${targetVmName}`)
       pushLog(`Job ${data.job_id} queued. You can wait a few minutes and watch the live logs below.`)
+      if (migrationUsesBastionPath && diskFiles.length > 0) {
+        pushLog('Using bastion path for migration. Local files remain only as analysis context.')
+      }
 
       if (redirectToConsole && data.vm_console_url) {
         pushLog(`Opening OpenShift VM page for ${targetVmName}`)
@@ -717,7 +777,7 @@ const HomePage = () => {
                   setVmName((current) => current || bundle.inferredName)
                   setTargetVmName((current) => current || bundle.inferredName)
                   setSourceDiskFormat(bundle.inferredFormat)
-                  setSourceDiskPath('')
+                  setVmSource('local-browser-vmware')
                 }}
               />
             </label>
@@ -767,8 +827,13 @@ const HomePage = () => {
             </label>
           </FieldGrid>
           <p className="hint">
-            Estimated time: <strong>{estimateMigrationTime(importMode, diskFiles.length > 0)}</strong>
+            Estimated time: <strong>{estimateMigrationTime(importMode, !migrationUsesBastionPath && diskFiles.length > 0)}</strong>
           </p>
+          {migrationUsesBastionPath && diskFiles.length > 0 ? (
+            <p className="hint">
+              Using bastion path for the real migration. Local files stay selected only for analysis and planning.
+            </p>
+          ) : null}
           {diskFiles.length > 0 ? (
             (() => {
               const bundle = inferVmwareBundle(diskFiles)
