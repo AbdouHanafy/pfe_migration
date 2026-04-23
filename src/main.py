@@ -52,6 +52,21 @@ def run_api():
         reload=config.API_DEBUG
     )
 
+
+def run_local_agent():
+    """Demarre l'agent local."""
+    import uvicorn
+
+    print("Demarrage de l'agent local...")
+    print(f"http://{config.LOCAL_AGENT_HOST}:{config.LOCAL_AGENT_PORT}")
+
+    uvicorn.run(
+        "src.local_agent.main:app",
+        host=config.LOCAL_AGENT_HOST,
+        port=config.LOCAL_AGENT_PORT,
+        reload=config.API_DEBUG
+    )
+
 def run_tests():
     """Exécute les tests"""
     import pytest
@@ -78,13 +93,14 @@ Exemples:
   %(prog)s api          # Démarre l'API REST
   %(prog)s discovery    # Teste la découverte des VMs
   %(prog)s tests        # Exécute les tests
+  %(prog)s agent        # Demarre l'agent local
   %(prog)s config       # Affiche la configuration
         """
     )
     
     parser.add_argument(
         "command",
-        choices=["api", "discovery", "tests", "config", "all"],
+        choices=["api", "discovery", "tests", "agent", "config", "all"],
         help="Commande à exécuter"
     )
     
@@ -99,6 +115,8 @@ Exemples:
         run_discovery()
     elif args.command == "tests":
         run_tests()
+    elif args.command == "agent":
+        run_local_agent()
     elif args.command == "config":
         show_config()
     elif args.command == "all":

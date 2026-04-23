@@ -11,6 +11,7 @@ def test_kvm_discoverer_initialization():
     discoverer = KVMDiscoverer()
     assert discoverer.connection_uri == 'qemu:///system'
     assert discoverer.conn is None
+    assert discoverer.last_error == ""
 
 @patch('libvirt.open')
 def test_connect_success(mock_libvirt_open):
@@ -34,6 +35,7 @@ def test_connect_failure(mock_libvirt_open):
     
     assert result is False
     assert discoverer.conn is None
+    assert "Impossible de se connecter" in discoverer.last_error
 
 def test_disconnect():
     """Test la déconnexion"""

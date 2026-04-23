@@ -350,6 +350,24 @@ export JWT_SECRET='pfe-migration-secret'
 python src/main.py api
 ```
 
+### KVM distant depuis le bastion
+
+Si la VM KVM tourne sur un autre hote que le bastion, le backend ne peut pas la voir avec `qemu:///system`.
+
+Dans ce cas, definir `KVM_URI` sur le bastion avant de lancer l'API, par exemple :
+
+```bash
+export KVM_URI='qemu+ssh://abdou@10.9.21.90/system'
+```
+
+Le backend expose ensuite dans `/health` :
+
+- `kvm_connection`
+- `kvm_uri`
+- `kvm_last_error`
+
+Cela permet de verifier rapidement si le bastion atteint bien le libvirt distant.
+
 ### Frontend sur le poste local
 
 ```powershell

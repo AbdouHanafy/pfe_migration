@@ -50,6 +50,15 @@ class Config:
     # KVM
     KVM_CONNECTION_URI = os.getenv("KVM_URI", "qemu:///system")
 
+    # Local agent
+    LOCAL_AGENT_HOST = os.getenv("LOCAL_AGENT_HOST", "127.0.0.1")
+    LOCAL_AGENT_PORT = int(os.getenv("LOCAL_AGENT_PORT", "8010"))
+    LOCAL_AGENT_TOKEN = os.getenv("LOCAL_AGENT_TOKEN", "")
+    LOCAL_AGENT_CORS_ORIGINS = _parse_csv_env.__func__(
+        "LOCAL_AGENT_CORS_ORIGINS",
+        ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
+
     # VMware Workstation discovery (comma-separated paths)
     VMWARE_WORKSTATION_PATHS = _parse_csv_env.__func__(
         "VMWARE_WORKSTATION_PATHS",

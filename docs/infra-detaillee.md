@@ -57,6 +57,7 @@ Pourquoi ce choix :
 - le bastion centralise les traitements lourds et les acces vers OpenShift
 - il peut executer `oc`, `virtctl` et `qemu-img`
 - il peut aussi se connecter a une plateforme VMware ESXi / vSphere distante via `pyVmomi`
+- il peut aussi se connecter a un hyperviseur KVM distant via `libvirt` si `KVM_URI` pointe vers une URI distante, par exemple `qemu+ssh://utilisateur@hote/system`
 - il permet de separer le pilotage web de l'execution systeme
 
 ### 3.3 Cluster OpenShift

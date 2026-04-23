@@ -96,7 +96,10 @@ def _ensure_kvm_connected() -> None:
         if not kvm_discoverer.connect():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Impossible de se connecter à KVM"
+                detail=(
+                    f"Impossible de se connecter a KVM via '{kvm_discoverer.connection_uri}'. "
+                    f"{kvm_discoverer.last_error or 'Verifiez KVM_URI, libvirt et l acces reseau depuis le bastion.'}"
+                )
             )
 
 def _get_vm_details(vm_name: str, source: str) -> Dict:
@@ -556,6 +559,8 @@ async def health_check(_: None = Depends(_require_auth)):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": {
             "kvm_connection": kvm_discoverer.conn is not None,
+            "kvm_uri": kvm_discoverer.connection_uri,
+            "kvm_last_error": kvm_discoverer.last_error or None,
             "vmware_esxi_configured": vmware_esxi_discoverer.is_configured,
             "tools": check_tools()
         }
@@ -597,16 +602,21 @@ async def login_user(req: LoginRequest, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/discovery/kvm", response_model=List[Dict])
 async def discover_kvm_vms(_: None = Depends(_require_auth)):
-    """Découvre toutes les VMs KVM"""
+    """Decouvre toutes les VMs KVM"""
     try:
         _ensure_kvm_connected()
         vms = kvm_discoverer.list_vms()
         return vms
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Erreur découverte KVM: {e}")
+        logger.error(f"Erreur decouverte KVM: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erreur lors de la découverte: {str(e)}"
+            detail=(
+                f"Erreur lors de la decouverte KVM via '{kvm_discoverer.connection_uri}': "
+                f"{str(e) or kvm_discoverer.last_error or 'erreur inconnue'}"
+            )
         )
 
 @app.get("/api/v1/discovery/kvm/{vm_name}")

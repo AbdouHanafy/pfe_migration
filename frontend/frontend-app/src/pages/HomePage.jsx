@@ -8,7 +8,12 @@ import Card from '../components/Card'
 import JsonBlock from '../components/JsonBlock'
 import Pill from '../components/Pill'
 import FieldGrid from '../components/FieldGrid'
-import { analyzeLocalVmwareBundle } from '../utils/localVmware'
+import {
+  analyzeLocalVmwareBundle,
+  analyzeVmDetails,
+  buildConversionPlan,
+  chooseLocalStrategy,
+} from '../utils/localVmware'
 
 const formatBytes = (value) => {
   if (!value) return '0 B'
@@ -48,6 +53,33 @@ const inferVmwareBundle = (files) => {
 const inferPrimaryKvmDisk = (details) => {
   const disks = Array.isArray(details?.disks) ? details.disks : []
   return disks.find((disk) => (disk.device || 'disk') === 'disk' && disk.path) || null
+}
+
+const isLocalAgentSource = (source) => ['local-agent-kvm', 'local-agent-hyperv'].includes(source)
+
+const buildLocalAgentEndpoint = (source, vmName = '') => {
+  const encodedVmName = encodeURIComponent(vmName)
+  if (source === 'local-agent-kvm') {
+    return vmName ? `/api/v1/discovery/kvm/${encodedVmName}` : '/api/v1/discovery/kvm'
+  }
+  if (source === 'local-agent-hyperv') {
+    return vmName ? `/api/v1/discovery/hyperv/${encodedVmName}` : '/api/v1/discovery/hyperv'
+  }
+  return '/api/v1/discovery/kvm'
+}
+
+const buildLocalAgentPlan = (details, source) => {
+  const analysis = analyzeVmDetails(details)
+  const conversionPlan = buildConversionPlan(details, analysis)
+  const strategy = chooseLocalStrategy(analysis, conversionPlan)
+  return {
+    vm_name: details?.name || '',
+    source,
+    details,
+    analysis,
+    conversion_plan: conversionPlan,
+    strategy,
+  }
 }
 
 const buildMigrationGate = (planData, vmName) => {
@@ -120,6 +152,9 @@ const HomePage = () => {
   const [apiBase, setApiBase] = useState(
     import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000'
   )
+  const [localAgentBase, setLocalAgentBase] = useState(import.meta.env.VITE_LOCAL_AGENT_BASE_URL || 'http://127.0.0.1:8010')
+  const [localAgentToken, setLocalAgentToken] = useState(import.meta.env.VITE_LOCAL_AGENT_TOKEN || '')
+  const [localAgentHealth, setLocalAgentHealth] = useState(null)
   const [vms, setVms] = useState([])
   const [vmName, setVmName] = useState('')
   const [discoverySource, setDiscoverySource] = useState('kvm')
@@ -133,10 +168,12 @@ const HomePage = () => {
 
   const [loading, setLoading] = useState({
     health: false,
+    agentHealth: false,
     discover: false,
     analyze: false,
     plan: false,
     prepare: false,
+    agentPrepare: false,
     start: false,
     status: false,
     report: false,
@@ -155,17 +192,22 @@ const HomePage = () => {
   const [importMode, setImportMode] = useState('http')
   const [migrationNotice, setMigrationNotice] = useState('')
   const [preparedBundle, setPreparedBundle] = useState(null)
+  const [localAgentPreparation, setLocalAgentPreparation] = useState(null)
 
   const { token } = useAuth()
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
   const { logs, pushLog } = useLogger()
   const migrationGate = useMemo(() => buildMigrationGate(analysis, vmName), [analysis, vmName])
   const trimmedSourceDiskPath = sourceDiskPath.trim()
-  const migrationUsesBastionPath = Boolean(trimmedSourceDiskPath)
+  const localAgentSourceSelected = isLocalAgentSource(vmSource)
+  const migrationUsesBastionPath = Boolean(trimmedSourceDiskPath) && !localAgentSourceSelected
   const inferredKvmDisk = useMemo(() => (
     vmSource === 'kvm' ? inferPrimaryKvmDisk(analysis?.details) : null
   ), [analysis, vmSource])
-  const canStartRealMigration = migrationGate.ready && Boolean(targetVmName) && (migrationUsesBastionPath || diskFiles.length > 0 || Boolean(inferredKvmDisk))
+  const canStartRealMigration = !localAgentSourceSelected
+    && migrationGate.ready
+    && Boolean(targetVmName)
+    && (migrationUsesBastionPath || diskFiles.length > 0 || Boolean(inferredKvmDisk))
   const lastNotifiedStatusRef = useRef('')
 
   useEffect(() => {
@@ -173,6 +215,8 @@ const HomePage = () => {
       const raw = window.sessionStorage.getItem(STORAGE_KEY)
       if (!raw) return
       const saved = JSON.parse(raw)
+      if (saved.localAgentBase) setLocalAgentBase(saved.localAgentBase)
+      if (saved.localAgentToken) setLocalAgentToken(saved.localAgentToken)
       if (saved.vmName) setVmName(saved.vmName)
       if (saved.vmSource) setVmSource(saved.vmSource)
       if (saved.analysis) setAnalysis(saved.analysis)
@@ -196,6 +240,8 @@ const HomePage = () => {
       window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
         vmName,
         vmSource,
+        localAgentBase,
+        localAgentToken,
         analysis,
         sourceDiskPath,
         sourceDiskFormat,
@@ -211,7 +257,7 @@ const HomePage = () => {
     } catch {
       // Ignore persistence issues.
     }
-  }, [vmName, vmSource, analysis, sourceDiskPath, sourceDiskFormat, targetVmName, pvcSize, memory, cpuCores, firmware, diskBus, namespace, importMode])
+  }, [vmName, vmSource, localAgentBase, localAgentToken, analysis, sourceDiskPath, sourceDiskFormat, targetVmName, pvcSize, memory, cpuCores, firmware, diskBus, namespace, importMode])
 
   useEffect(() => {
     if (!inferredKvmDisk || vmSource !== 'kvm') return
@@ -228,6 +274,20 @@ const HomePage = () => {
 
   const setActionLoading = (key, value) => {
     setLoading((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const fetchLocalAgentJson = async (path, options = {}) => {
+    const headers = { ...(options.headers || {}) }
+    if (localAgentToken) {
+      headers['X-Agent-Token'] = localAgentToken
+    }
+    const base = (localAgentBase || '').replace(/\/$/, '')
+    const response = await fetch(`${base}${path}`, { ...options, headers })
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(`${response.status} ${response.statusText}: ${text}`)
+    }
+    return response.json()
   }
 
   const openVmConsole = (consoleUrl) => {
@@ -309,17 +369,38 @@ const HomePage = () => {
     }
   }
 
+  const onLocalAgentHealth = async () => {
+    setError(null)
+    setActionLoading('agentHealth', true)
+    try {
+      const data = await fetchLocalAgentJson('/health')
+      setLocalAgentHealth(data)
+      pushLog('Local agent health OK')
+    } catch (err) {
+      handleError('Local agent health', err)
+    } finally {
+      setActionLoading('agentHealth', false)
+    }
+  }
+
   const onDiscover = async () => {
     setError(null)
     setActionLoading('discover', true)
     try {
       let endpoint = '/api/v1/discovery/kvm'
-      if (discoverySource === 'vmware-workstation') {
+      let data
+      if (discoverySource === 'local-agent-kvm' || discoverySource === 'local-agent-hyperv') {
+        endpoint = buildLocalAgentEndpoint(discoverySource)
+        data = await fetchLocalAgentJson(endpoint)
+      } else if (discoverySource === 'vmware-workstation') {
         endpoint = '/api/v1/discovery/vmware-workstation'
+        data = await api.fetchJson(endpoint)
       } else if (discoverySource === 'vmware-esxi') {
         endpoint = '/api/v1/discovery/vmware-esxi'
+        data = await api.fetchJson(endpoint)
+      } else {
+        data = await api.fetchJson(endpoint)
       }
-      const data = await api.fetchJson(endpoint)
       setVms(data)
       setVmSource(discoverySource)
       pushLog(`Discovered ${data.length} VMs (${discoverySource})`)
@@ -332,6 +413,25 @@ const HomePage = () => {
 
   const onAnalyze = async () => {
     if (!vmName) return pushLog('VM name required')
+    if (isLocalAgentSource(vmSource)) {
+      setError(null)
+      setActionLoading('analyze', true)
+      try {
+        const details = await fetchLocalAgentJson(buildLocalAgentEndpoint(vmSource, vmName))
+        const data = buildLocalAgentPlan(details, vmSource)
+        setAnalysis(data)
+        const primaryDisk = inferPrimaryKvmDisk(details)
+        if (primaryDisk?.path && !trimmedSourceDiskPath) setSourceDiskPath(primaryDisk.path)
+        if (primaryDisk?.format) setSourceDiskFormat(primaryDisk.format)
+        if (!targetVmName) setTargetVmName(details?.name || vmName)
+        pushLog(`Local agent analysis done for ${vmName}`)
+      } catch (err) {
+        handleError('Analysis', err)
+      } finally {
+        setActionLoading('analyze', false)
+      }
+      return
+    }
     if (diskFiles.length === 0 && trimmedSourceDiskPath && vmSource === 'kvm') {
       setError('Analysis: use local VM files for Analyze/Plan, or keep the previous plan. Bastion Disk Path is used for migration, not KVM discovery.')
       return pushLog('Analyze blocked: bastion path is for migration. Use local VM files for Analyze/Plan.')
@@ -366,6 +466,25 @@ const HomePage = () => {
 
   const onPlan = async () => {
     if (!vmName) return pushLog('VM name required')
+    if (isLocalAgentSource(vmSource)) {
+      setError(null)
+      setActionLoading('plan', true)
+      try {
+        const details = await fetchLocalAgentJson(buildLocalAgentEndpoint(vmSource, vmName))
+        const data = buildLocalAgentPlan(details, vmSource)
+        setAnalysis(data)
+        const primaryDisk = inferPrimaryKvmDisk(details)
+        if (primaryDisk?.path && !trimmedSourceDiskPath) setSourceDiskPath(primaryDisk.path)
+        if (primaryDisk?.format) setSourceDiskFormat(primaryDisk.format)
+        if (!targetVmName) setTargetVmName(details?.name || vmName)
+        pushLog(`Local agent plan generated for ${vmName}`)
+      } catch (err) {
+        handleError('Plan', err)
+      } finally {
+        setActionLoading('plan', false)
+      }
+      return
+    }
     if (diskFiles.length === 0 && trimmedSourceDiskPath && vmSource === 'kvm') {
       setError('Plan: use local VM files for Analyze/Plan, or keep the previous plan. Bastion Disk Path is used for migration, not KVM discovery.')
       return pushLog('Plan blocked: bastion path is for migration. Use local VM files for Analyze/Plan.')
@@ -394,6 +513,10 @@ const HomePage = () => {
 
   const onStart = async () => {
     if (!vmName) return pushLog('VM name required')
+    if (localAgentSourceSelected) {
+      setMigrationNotice('Local agent discovery and planning are ready. The next phase is disk handoff from the user machine to the bastion before a real migration can start.')
+      return pushLog('Start blocked: local agent disk handoff to bastion is the next implementation step.')
+    }
     if (canStartRealMigration) {
       return submitOpenShiftMigration({
         loadingKey: 'start',
@@ -521,12 +644,38 @@ const HomePage = () => {
     }
   }
 
+  const onPrepareLocalAgent = async () => {
+    if (!vmName) return pushLog('VM name required')
+    if (!isLocalAgentSource(vmSource)) return pushLog('Select a Local Agent VM first')
+
+    setError(null)
+    setActionLoading('agentPrepare', true)
+    try {
+      const source = vmSource === 'local-agent-hyperv' ? 'hyperv' : 'kvm'
+      const data = await fetchLocalAgentJson(`/api/v1/prepare/${source}/${encodeURIComponent(vmName)}`)
+      setLocalAgentPreparation(data)
+      setSourceDiskPath(data?.primary_disk?.path || '')
+      setSourceDiskFormat(data?.primary_disk?.format || sourceDiskFormat || 'raw')
+      setTargetVmName((current) => current || data?.vm_name || vmName)
+      setMigrationNotice('Local agent preparation succeeded. The VM details and disk path are ready in the UI. Disk handoff from user machine to bastion is the next implementation step.')
+      pushLog(`Local agent prepared ${vmName}`)
+    } catch (err) {
+      handleError('Local agent prepare', err)
+    } finally {
+      setActionLoading('agentPrepare', false)
+    }
+  }
+
   const submitOpenShiftMigration = async ({
     loadingKey,
     actionLabel,
     redirectToConsole = false,
   }) => {
     if (!vmName) return pushLog('VM name required (source label)')
+    if (isLocalAgentSource(vmSource)) {
+      setMigrationNotice('Local agent discovery is wired, but real migration still needs the next handoff phase: sending the local disk from the user machine to the bastion.')
+      return pushLog('Real migration blocked: local agent disk handoff to bastion is not implemented yet.')
+    }
     if (!migrationGate.ready) return pushLog(migrationGate.message)
     if (!targetVmName) return pushLog('Target VM name is required')
     if (diskFiles.length === 0 && !trimmedSourceDiskPath && !inferredKvmDisk) {
@@ -617,6 +766,7 @@ const HomePage = () => {
 
   const startButtonLabel = () => {
     if (loading.start) return 'Loading...'
+    if (localAgentSourceSelected) return 'Start (Agent Pending)'
     if (canStartRealMigration) return 'Start And Open VM'
     return 'Start (Simulated)'
   }
@@ -654,8 +804,30 @@ const HomePage = () => {
 
       <main className="grid">
         <Card
+          title="Local Agent"
+          hint="Use this when the VM exists only on the user machine, for example local KVM or Hyper-V."
+          actions={
+            <Button variant="ghost" onClick={onLocalAgentHealth} disabled={loading.agentHealth}>
+              {btnLabel('agentHealth') || 'Agent Health'}
+            </Button>
+          }
+        >
+          <FieldGrid>
+            <label className="field">
+              <span className="field-label">Agent URL</span>
+              <Input value={localAgentBase} onChange={(e) => setLocalAgentBase(e.target.value)} placeholder="http://127.0.0.1:8010" />
+            </label>
+            <label className="field">
+              <span className="field-label">Agent Token</span>
+              <Input value={localAgentToken} onChange={(e) => setLocalAgentToken(e.target.value)} placeholder="optional agent token" />
+            </label>
+          </FieldGrid>
+          <JsonBlock data={localAgentHealth} />
+        </Card>
+
+        <Card
           title="Discovery"
-          hint="Lists VMs visible from the backend host."
+          hint="Lists VMs visible from the backend host or from the local agent."
           actions={
             <>
               <select
@@ -664,6 +836,8 @@ const HomePage = () => {
                 onChange={(e) => setDiscoverySource(e.target.value)}
               >
                 <option value="kvm">KVM</option>
+                <option value="local-agent-kvm">Local Agent KVM</option>
+                <option value="local-agent-hyperv">Local Agent Hyper-V</option>
                 <option value="vmware-esxi">VMware ESXi / vSphere</option>
                 <option value="vmware-workstation">VMware Workstation</option>
               </select>
@@ -685,6 +859,7 @@ const HomePage = () => {
                   setTargetVmName((current) => current || vm.name)
                   setAnalysis(null)
                   setOpenShiftResult(null)
+                  setLocalAgentPreparation(null)
                   pushLog(`Selected VM: ${vm.name}`)
                 }}
               >
@@ -769,10 +944,13 @@ const HomePage = () => {
           hint="Upload a local disk from your browser or use a disk path that already exists on the bastion. Real migration unlocks only after a successful Plan."
           actions={
             <>
+              <Button variant="ghost" onClick={onPrepareLocalAgent} disabled={loading.agentPrepare || !isLocalAgentSource(vmSource)}>
+                {btnLabel('agentPrepare') || 'Prepare Via Agent'}
+              </Button>
               <Button variant="ghost" onClick={onPrepareBastion} disabled={loading.prepare || diskFiles.length === 0}>
                 {btnLabel('prepare') || 'Prepare On Bastion'}
               </Button>
-              <Button onClick={onOpenShift} disabled={loading.openshift || !migrationGate.ready}>
+              <Button onClick={onOpenShift} disabled={loading.openshift || !migrationGate.ready || localAgentSourceSelected}>
                 {btnLabel('openshift') || 'Migrate to OpenShift'}
               </Button>
             </>
@@ -781,6 +959,11 @@ const HomePage = () => {
           <p className="hint">
             Precheck: <strong>{migrationGate.message}</strong>
           </p>
+          {localAgentSourceSelected ? (
+            <p className="hint">
+              Local agent source selected. Discovery and planning work in the UI now, but real migration stays disabled until we add disk handoff from the user machine to the bastion.
+            </p>
+          ) : null}
           <FieldGrid>
             <label className="field">
               <span className="field-label">Local VM Files</span>
@@ -875,12 +1058,19 @@ const HomePage = () => {
             })()
           ) : (
             <p className="hint">
-              No local file selected. The migration will use the bastion disk path field if you submit now.
+              {localAgentSourceSelected
+                ? 'No browser file is needed for local-agent discovery. Use Prepare Via Agent to fetch the local disk metadata.'
+                : 'No local file selected. The migration will use the bastion disk path field if you submit now.'}
             </p>
           )}
           {preparedBundle?.source_disk_path ? (
             <p className="hint">
               Prepared on bastion: <strong>{preparedBundle.source_disk_path}</strong>
+            </p>
+          ) : null}
+          {localAgentPreparation?.primary_disk?.path ? (
+            <p className="hint">
+              Prepared via local agent: <strong>{localAgentPreparation.primary_disk.path}</strong>
             </p>
           ) : null}
           <JsonBlock data={openShiftResult} />
