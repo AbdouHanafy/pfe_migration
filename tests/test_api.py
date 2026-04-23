@@ -186,6 +186,46 @@ async def test_migrate_to_openshift_runs_in_background(monkeypatch):
     job_store._jobs.pop(response["job_id"], None)
 
 
+@pytest.mark.asyncio
+async def test_migrate_to_openshift_resolves_kvm_disk_when_path_missing(monkeypatch):
+    monkeypatch.setattr(config, "ENABLE_REAL_MIGRATION", True)
+    monkeypatch.setattr(config, "OPENSHIFT_CONSOLE_URL", "https://console-openshift.example")
+
+    monkeypatch.setattr(
+        "src.api.main._get_vm_details",
+        lambda name, source: {
+            "name": name,
+            "disks": [
+                {"device": "disk", "path": "/var/lib/libvirt/images/test-vm.qcow2", "format": "qcow2"}
+            ],
+        },
+    )
+
+    captured = {}
+
+    def fake_add_task(fn, *args):
+        captured["args"] = args
+
+    request = OpenShiftMigrationRequest(
+        source_disk_path="",
+        source_disk_format="auto",
+        target_vm_name="target-vm",
+    )
+
+    background_tasks = BackgroundTasks()
+    monkeypatch.setattr(background_tasks, "add_task", fake_add_task)
+
+    response = await migrate_to_openshift("source-vm", request, background_tasks, source="kvm")
+
+    assert response["status"] == "queued"
+    assert response["source_disk_path"] == "/var/lib/libvirt/images/test-vm.qcow2"
+    assert response["source_disk_format"] == "qcow2"
+    assert captured["args"][1].source_disk_path == "/var/lib/libvirt/images/test-vm.qcow2"
+    assert captured["args"][1].source_disk_format == "qcow2"
+
+    job_store._jobs.pop(response["job_id"], None)
+
+
 def test_build_uploaded_bundle_summary_detects_split_vmdk(tmp_path):
     descriptor = tmp_path / "test.vmdk"
     descriptor.write_text(

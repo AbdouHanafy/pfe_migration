@@ -45,6 +45,11 @@ const inferVmwareBundle = (files) => {
   }
 }
 
+const inferPrimaryKvmDisk = (details) => {
+  const disks = Array.isArray(details?.disks) ? details.disks : []
+  return disks.find((disk) => (disk.device || 'disk') === 'disk' && disk.path) || null
+}
+
 const buildMigrationGate = (planData, vmName) => {
   if (!vmName) {
     return { ready: false, tone: 'neutral', message: 'Select or enter a VM name first.' }
@@ -157,7 +162,10 @@ const HomePage = () => {
   const migrationGate = useMemo(() => buildMigrationGate(analysis, vmName), [analysis, vmName])
   const trimmedSourceDiskPath = sourceDiskPath.trim()
   const migrationUsesBastionPath = Boolean(trimmedSourceDiskPath)
-  const canStartRealMigration = migrationGate.ready && Boolean(targetVmName) && (migrationUsesBastionPath || diskFiles.length > 0)
+  const inferredKvmDisk = useMemo(() => (
+    vmSource === 'kvm' ? inferPrimaryKvmDisk(analysis?.details) : null
+  ), [analysis, vmSource])
+  const canStartRealMigration = migrationGate.ready && Boolean(targetVmName) && (migrationUsesBastionPath || diskFiles.length > 0 || Boolean(inferredKvmDisk))
   const lastNotifiedStatusRef = useRef('')
 
   useEffect(() => {
@@ -204,6 +212,19 @@ const HomePage = () => {
       // Ignore persistence issues.
     }
   }, [vmName, vmSource, analysis, sourceDiskPath, sourceDiskFormat, targetVmName, pvcSize, memory, cpuCores, firmware, diskBus, namespace, importMode])
+
+  useEffect(() => {
+    if (!inferredKvmDisk || vmSource !== 'kvm') return
+    if (!trimmedSourceDiskPath) {
+      setSourceDiskPath(inferredKvmDisk.path || '')
+    }
+    if (!sourceDiskFormat || sourceDiskFormat === 'auto' || sourceDiskFormat === 'vmdk') {
+      setSourceDiskFormat(inferredKvmDisk.format || 'raw')
+    }
+    if (!targetVmName) {
+      setTargetVmName(vmName)
+    }
+  }, [inferredKvmDisk, vmSource, trimmedSourceDiskPath, sourceDiskFormat, targetVmName, vmName])
 
   const setActionLoading = (key, value) => {
     setLoading((prev) => ({ ...prev, [key]: value }))
@@ -508,8 +529,8 @@ const HomePage = () => {
     if (!vmName) return pushLog('VM name required (source label)')
     if (!migrationGate.ready) return pushLog(migrationGate.message)
     if (!targetVmName) return pushLog('Target VM name is required')
-    if (diskFiles.length === 0 && !trimmedSourceDiskPath) {
-      return pushLog('Select a local disk file or enter a bastion disk path')
+    if (diskFiles.length === 0 && !trimmedSourceDiskPath && !inferredKvmDisk) {
+      return pushLog('Select a local disk file, enter a bastion disk path, or choose a KVM VM with a detected disk')
     }
 
     setError(null)
@@ -541,7 +562,7 @@ const HomePage = () => {
         })
       } else {
         const payload = buildOpenShiftPayload({
-          sourceDiskPath: trimmedSourceDiskPath,
+          sourceDiskPath: trimmedSourceDiskPath || inferredKvmDisk?.path || '',
           sourceDiskFormat,
           targetVmName,
           pvcSize,
@@ -553,7 +574,8 @@ const HomePage = () => {
           importMode,
         })
 
-        data = await api.fetchJson(`/api/v1/migration/openshift/${vmName}`, {
+        const migrationSource = ['kvm', 'vmware-esxi', 'vmware-workstation'].includes(vmSource) ? vmSource : 'kvm'
+        data = await api.fetchJson(`/api/v1/migration/openshift/${vmName}?source=${migrationSource}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -832,6 +854,11 @@ const HomePage = () => {
           {migrationUsesBastionPath && diskFiles.length > 0 ? (
             <p className="hint">
               Using bastion path for the real migration. Local files stay selected only for analysis and planning.
+            </p>
+          ) : null}
+          {!migrationUsesBastionPath && inferredKvmDisk ? (
+            <p className="hint">
+              KVM disk detected from libvirt: <strong>{inferredKvmDisk.path}</strong>. The migration can use it automatically.
             </p>
           ) : null}
           {diskFiles.length > 0 ? (

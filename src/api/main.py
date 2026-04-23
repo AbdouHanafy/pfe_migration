@@ -177,7 +177,7 @@ def _create_token(matricule: str) -> str:
     return jwt.encode(payload, config.JWT_SECRET, algorithm=config.JWT_ALGORITHM)
 
 class OpenShiftMigrationRequest(BaseModel):
-    source_disk_path: str = Field(..., description="Chemin vers le disque source (ex: VMDK)")
+    source_disk_path: str = Field("", description="Chemin vers le disque source (ex: VMDK)")
     source_disk_format: str = Field("vmdk", description="Format du disque source")
     target_vm_name: str = Field(..., description="Nom de la VM cible sur OpenShift")
     pvc_size: str = Field("20Gi", description="Taille du PVC")
@@ -333,6 +333,41 @@ def _build_uploaded_vmware_details(upload_dir: Path, filenames: List[str]) -> Di
         "vmx_path": str(vmx_path),
         "uploaded_files": filenames,
     }
+
+
+def _select_primary_vm_disk(details: Dict) -> Dict:
+    disks = details.get("disks") or []
+    candidates = [
+        disk
+        for disk in disks
+        if (disk.get("device") or "disk") == "disk" and disk.get("path")
+    ]
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucun disque principal n'a pu etre determine pour cette VM."
+        )
+    candidates.sort(key=lambda disk: (disk.get("path", "").startswith("/"), len(disk.get("path", ""))), reverse=True)
+    return candidates[0]
+
+
+def _resolve_source_disk_for_migration(
+    vm_name: str,
+    source: str,
+    requested_path: str,
+    requested_format: str
+) -> tuple[str, str]:
+    normalized_path = (requested_path or "").strip()
+    normalized_format = (requested_format or "").strip().lower()
+    if normalized_path:
+        effective_format = normalized_format if normalized_format not in {"", "auto"} else Path(normalized_path).suffix.lower().lstrip(".") or "raw"
+        return normalized_path, effective_format
+
+    details = _get_vm_details(vm_name, source)
+    primary_disk = _select_primary_vm_disk(details)
+    effective_path = primary_disk["path"]
+    effective_format = normalized_format if normalized_format not in {"", "auto"} else (primary_disk.get("format") or "raw")
+    return effective_path, effective_format
 
 
 def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, namespace: str) -> None:
@@ -856,6 +891,7 @@ async def migrate_to_openshift(
     vm_name: str,
     req: OpenShiftMigrationRequest,
     background_tasks: BackgroundTasks,
+    source: str = Query(default="kvm"),
     _: None = Depends(_require_auth)
 ):
     """
@@ -869,19 +905,25 @@ async def migrate_to_openshift(
 
     namespace = req.namespace or config.OPENSHIFT_NAMESPACE
     import_mode = _resolve_import_mode(req.import_mode)
+    resolved_source_disk_path, resolved_source_disk_format = _resolve_source_disk_for_migration(
+        vm_name=vm_name,
+        source=source,
+        requested_path=req.source_disk_path,
+        requested_format=req.source_disk_format,
+    )
     plan = {
         "strategy": {"strategy": f"openshift-{import_mode}"},
         "target_vm_name": req.target_vm_name,
         "namespace": namespace,
-        "source_disk_path": req.source_disk_path,
-        "source_disk_format": req.source_disk_format,
+        "source_disk_path": resolved_source_disk_path,
+        "source_disk_format": resolved_source_disk_format,
         "import_mode": import_mode,
         "vm_console_url": build_vm_console_url(req.target_vm_name, namespace)
     }
     job = job_store.create_job(vm_name, plan)
     queued_req = OpenShiftMigrationRequest(
-        source_disk_path=req.source_disk_path,
-        source_disk_format=req.source_disk_format,
+        source_disk_path=resolved_source_disk_path,
+        source_disk_format=resolved_source_disk_format,
         target_vm_name=req.target_vm_name,
         pvc_size=req.pvc_size,
         memory=req.memory,
@@ -898,7 +940,8 @@ async def migrate_to_openshift(
         vm_name,
         req.target_vm_name,
         namespace,
-        source_disk_path=req.source_disk_path,
+        source_disk_path=resolved_source_disk_path,
+        source_disk_format=resolved_source_disk_format,
         import_mode=import_mode
     )
 
