@@ -1,35 +1,70 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Card from '../components/Card'
 import Button from '../components/Button'
 import Input from '../components/Input'
+import { createApi } from '../services/api'
+import { useAuth } from '../hooks/useAuth'
 
-const seedHistory = [
-  { id: 'mig-1001', vm: 'erp-vm', os: 'Ubuntu 22.04', date: '2026-04-22', duration: '27m', status: 'Success' },
-  { id: 'mig-1002', vm: 'legacy-payroll', os: 'Windows Server 2016', date: '2026-04-21', duration: '41m', status: 'Failed' },
-  { id: 'mig-1003', vm: 'analytics-node', os: 'RHEL 9', date: '2026-04-20', duration: '19m', status: 'Success' },
-  { id: 'mig-1004', vm: 'ops-tools', os: 'Debian 12', date: '2026-04-19', duration: 'In progress', status: 'In Progress' },
-]
+const formatDate = (value) => {
+  if (!value) return '-'
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString()
+}
 
-const toCsv = (rows) => {
-  const header = ['ID', 'VM', 'OS', 'Date', 'Duration', 'Status']
-  const lines = rows.map((r) => [r.id, r.vm, r.os, r.date, r.duration, r.status].join(','))
-  return [header.join(','), ...lines].join('\n')
+const csvEscape = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
+
+const exportRowsToCsv = (rows) => {
+  const header = ['Job ID', 'VM', 'Status', 'Created', 'Updated', 'Error']
+  const lines = rows.map((row) => [
+    row.job_id,
+    row.vm_name,
+    row.status,
+    row.created_at,
+    row.updated_at,
+    row.error || '',
+  ].map(csvEscape).join(','))
+  return [header.map(csvEscape).join(','), ...lines].join('\n')
 }
 
 const MigrationHistoryPage = () => {
-  const [dateFilter, setDateFilter] = useState('')
+  const { token } = useAuth()
+  const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000')
+  const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
-  const [osFilter, setOsFilter] = useState('')
+  const [rows, setRows] = useState([])
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const filteredRows = useMemo(() => seedHistory.filter((row) => {
-    const passDate = !dateFilter || row.date === dateFilter
-    const passStatus = statusFilter === 'All' || row.status === statusFilter
-    const passOs = !osFilter || row.os.toLowerCase().includes(osFilter.toLowerCase())
-    return passDate && passStatus && passOs
-  }), [dateFilter, statusFilter, osFilter])
+  const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
+
+  const refresh = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      const data = await api.fetchJson('/api/v1/migration/jobs')
+      setRows(data || [])
+    } catch (err) {
+      setError(err.message || 'Failed to load migration history')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    refresh()
+  }, [])
+
+  const filteredRows = useMemo(() => rows.filter((row) => {
+    const query = search.trim().toLowerCase()
+    const textOk = !query
+      || (row.vm_name || '').toLowerCase().includes(query)
+      || (row.job_id || '').toLowerCase().includes(query)
+    const statusOk = statusFilter === 'All' || (row.status || '').toLowerCase() === statusFilter.toLowerCase()
+    return textOk && statusOk
+  }), [rows, search, statusFilter])
 
   const exportCsv = () => {
-    const csv = toCsv(filteredRows)
+    const csv = exportRowsToCsv(filteredRows)
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
@@ -43,7 +78,7 @@ const MigrationHistoryPage = () => {
       <header className="page-header">
         <div>
           <h1>Migration History</h1>
-          <p>Review completed jobs, inspect failures, and export execution reports.</p>
+          <p>Review backend jobs and export historical reports.</p>
         </div>
       </header>
 
@@ -53,40 +88,47 @@ const MigrationHistoryPage = () => {
           title="History Table"
           actions={(
             <>
-              <Input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} />
+              <Input value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="http://10.9.21.90:8000" />
+              <Input placeholder="Filter by VM or Job ID" value={search} onChange={(e) => setSearch(e.target.value)} />
               <select className="input" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
                 <option>All</option>
-                <option>Success</option>
-                <option>Failed</option>
-                <option>In Progress</option>
+                <option>queued</option>
+                <option>running</option>
+                <option>completed</option>
+                <option>failed</option>
               </select>
-              <Input placeholder="Filter by OS" value={osFilter} onChange={(e) => setOsFilter(e.target.value)} />
               <Button variant="ghost" onClick={exportCsv}>Export CSV</Button>
-              <Button onClick={() => window.print()}>Export PDF</Button>
+              <Button onClick={refresh} disabled={loading}>{loading ? 'Refreshing...' : 'Refresh'}</Button>
             </>
           )}
         >
+          {error ? <p className="error">{error}</p> : null}
           <div className="table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>ID</th>
                   <th>VM</th>
-                  <th>OS</th>
-                  <th>Date</th>
-                  <th>Duration</th>
+                  <th>Job ID</th>
                   <th>Status</th>
+                  <th>Created</th>
+                  <th>Updated</th>
+                  <th>Error</th>
                 </tr>
               </thead>
               <tbody>
+                {filteredRows.length === 0 ? (
+                  <tr>
+                    <td colSpan="6">No jobs found.</td>
+                  </tr>
+                ) : null}
                 {filteredRows.map((row) => (
-                  <tr key={row.id}>
-                    <td>{row.id}</td>
-                    <td>{row.vm}</td>
-                    <td>{row.os}</td>
-                    <td>{row.date}</td>
-                    <td>{row.duration}</td>
+                  <tr key={row.job_id}>
+                    <td>{row.vm_name}</td>
+                    <td>{row.job_id}</td>
                     <td>{row.status}</td>
+                    <td>{formatDate(row.created_at)}</td>
+                    <td>{formatDate(row.updated_at)}</td>
+                    <td>{row.error || '-'}</td>
                   </tr>
                 ))}
               </tbody>

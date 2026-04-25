@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 import re
 from uuid import uuid4
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, status, Depends, Header, Query, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 import jwt
+import httpx
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -192,6 +194,14 @@ class OpenShiftMigrationRequest(BaseModel):
     import_mode: str = Field("http", description="http ou upload")
 
 
+class LocalAgentPrepareRequest(BaseModel):
+    local_agent_base_url: str = Field(..., description="Base URL of the local agent, e.g. http://10.9.21.50:8010")
+    local_source: str = Field("kvm", description="kvm or hyperv")
+    local_agent_token: str = Field("", description="Optional local agent token")
+    target_vm_name: str = Field("", description="Target VM name on OpenShift")
+    source_disk_format: str = Field("auto", description="Optional source disk format override")
+
+
 def _sanitize_filename(filename: str) -> str:
     safe_name = Path(filename or "disk.img").name.strip()
     return safe_name or "disk.img"
@@ -301,6 +311,100 @@ def _build_uploaded_bundle_summary(upload_dir: Path, filenames: List[str], targe
 def _persist_uploaded_disks(uploads: List[UploadFile], target_vm_name: str) -> Dict:
     upload_dir, saved_names = _persist_uploaded_bundle(uploads, target_vm_name)
     return _build_uploaded_bundle_summary(upload_dir, saved_names, target_vm_name)
+
+
+def _extract_filename_from_handoff(headers: httpx.Headers, fallback: str) -> str:
+    content_disposition = headers.get("content-disposition", "")
+    if content_disposition:
+        match = re.search(r'filename="?([^";]+)"?', content_disposition, flags=re.IGNORECASE)
+        if match:
+            return _sanitize_filename(match.group(1))
+    return _sanitize_filename(fallback)
+
+
+def _normalize_local_source(source: str) -> str:
+    raw = (source or "").strip().lower()
+    if raw in {"kvm"}:
+        return "kvm"
+    if raw in {"hyperv", "hyper-v"}:
+        return "hyperv"
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="local_source must be 'kvm' or 'hyperv'."
+    )
+
+
+def _handoff_local_agent_disk(
+    vm_name: str,
+    target_vm_name: str,
+    local_agent_base_url: str,
+    local_source: str,
+    local_agent_token: str
+) -> Dict:
+    base = (local_agent_base_url or "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="local_agent_base_url is required."
+        )
+
+    source = _normalize_local_source(local_source)
+    handoff_url = f"{base}/api/v1/handoff/{source}/{quote(vm_name, safe='')}"
+    headers = {}
+    if (local_agent_token or "").strip():
+        headers["X-Agent-Token"] = local_agent_token.strip()
+
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    upload_dir = Path(config.DATA_DIR) / "uploads" / f"{target_vm_name}-{uuid4().hex[:8]}"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    timeout = httpx.Timeout(connect=15.0, read=3600.0, write=30.0, pool=30.0)
+    try:
+        with httpx.stream("GET", handoff_url, headers=headers, timeout=timeout, follow_redirects=True) as response:
+            if response.status_code != status.HTTP_200_OK:
+                detail = response.text
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Local agent handoff failed ({response.status_code}): {detail}"
+                )
+
+            fallback_name = f"{target_vm_name}.img"
+            filename = _extract_filename_from_handoff(response.headers, fallback_name)
+            disk_path = upload_dir / filename
+
+            total_size = 0
+            with disk_path.open("wb") as out:
+                for chunk in response.iter_bytes():
+                    if not chunk:
+                        continue
+                    out.write(chunk)
+                    total_size += len(chunk)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Unable to download disk from local agent: {exc}"
+        ) from exc
+
+    if not disk_path.exists() or disk_path.stat().st_size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Local agent handoff produced an empty disk file."
+        )
+
+    detected_format = response.headers.get("x-disk-format", "").strip().lower() or disk_path.suffix.lower().lstrip(".") or "raw"
+    return {
+        "vm_name": vm_name,
+        "upload_dir": str(upload_dir),
+        "primary_disk_path": str(disk_path),
+        "detected_format": detected_format,
+        "uploaded_files": [disk_path.name],
+        "vmx_path": None,
+        "split_extents": [],
+        "total_size_bytes": total_size,
+        "source": f"local-agent-{source}",
+    }
 
 
 def _select_primary_vmx_path(upload_dir: Path, filenames: List[str]) -> Path:
@@ -542,6 +646,7 @@ async def root(_: None = Depends(_require_auth)):
             "migration_plan": "/api/v1/migration/plan/{vm_name}",
             "migration_plan_upload": "/api/v1/migration/plan-upload",
             "migration_prepare_upload": "/api/v1/migration/prepare-upload/{vm_name}",
+            "migration_prepare_local_agent": "/api/v1/migration/prepare-local-agent/{vm_name}",
             "migration_start": "/api/v1/migration/start/{vm_name}",
             "migration_status": "/api/v1/migration/status/{job_id}",
             "migration_jobs": "/api/v1/migration/jobs",
@@ -832,6 +937,36 @@ async def prepare_uploaded_disk_for_bastion(
         "source_disk_format": effective_format,
         "bundle": bundle,
         "message": "Files uploaded to the bastion. You can now run the real migration using the prepared bastion path."
+    }
+
+
+@app.post("/api/v1/migration/prepare-local-agent/{vm_name}")
+async def prepare_local_agent_disk_for_bastion(
+    vm_name: str,
+    req: LocalAgentPrepareRequest,
+    _: None = Depends(_require_auth)
+):
+    """Stream the primary disk from a user local-agent to bastion storage."""
+    requested_target_name = (req.target_vm_name or "").strip() or vm_name
+    bundle = _handoff_local_agent_disk(
+        vm_name=vm_name,
+        target_vm_name=requested_target_name,
+        local_agent_base_url=req.local_agent_base_url,
+        local_source=req.local_source,
+        local_agent_token=req.local_agent_token,
+    )
+
+    detected_format = bundle["detected_format"]
+    requested_format = (req.source_disk_format or "").strip().lower()
+    effective_format = detected_format if requested_format in {"", "auto"} else requested_format
+
+    return {
+        "vm_name": vm_name,
+        "target_vm_name": requested_target_name,
+        "source_disk_path": bundle["primary_disk_path"],
+        "source_disk_format": effective_format,
+        "bundle": bundle,
+        "message": "Local-agent disk was copied to bastion storage. You can now run OpenShift migration from this bastion path."
     }
 
 @app.post("/api/v1/migration/start/{vm_name}")

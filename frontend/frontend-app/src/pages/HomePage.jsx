@@ -200,12 +200,11 @@ const HomePage = () => {
   const migrationGate = useMemo(() => buildMigrationGate(analysis, vmName), [analysis, vmName])
   const trimmedSourceDiskPath = sourceDiskPath.trim()
   const localAgentSourceSelected = isLocalAgentSource(vmSource)
-  const migrationUsesBastionPath = Boolean(trimmedSourceDiskPath) && !localAgentSourceSelected
+  const migrationUsesBastionPath = Boolean(trimmedSourceDiskPath)
   const inferredKvmDisk = useMemo(() => (
     vmSource === 'kvm' ? inferPrimaryKvmDisk(analysis?.details) : null
   ), [analysis, vmSource])
-  const canStartRealMigration = !localAgentSourceSelected
-    && migrationGate.ready
+  const canStartRealMigration = migrationGate.ready
     && Boolean(targetVmName)
     && (migrationUsesBastionPath || diskFiles.length > 0 || Boolean(inferredKvmDisk))
   const lastNotifiedStatusRef = useRef('')
@@ -652,13 +651,31 @@ const HomePage = () => {
     setActionLoading('agentPrepare', true)
     try {
       const source = vmSource === 'local-agent-hyperv' ? 'hyperv' : 'kvm'
-      const data = await fetchLocalAgentJson(`/api/v1/prepare/${source}/${encodeURIComponent(vmName)}`)
-      setLocalAgentPreparation(data)
-      setSourceDiskPath(data?.primary_disk?.path || '')
-      setSourceDiskFormat(data?.primary_disk?.format || sourceDiskFormat || 'raw')
-      setTargetVmName((current) => current || data?.vm_name || vmName)
-      setMigrationNotice('Local agent preparation succeeded. The VM details and disk path are ready in the UI. Disk handoff from user machine to bastion is the next implementation step.')
-      pushLog(`Local agent prepared ${vmName}`)
+      pushLog(`Reading local VM metadata from agent for ${vmName}...`)
+      const localData = await fetchLocalAgentJson(`/api/v1/prepare/${source}/${encodeURIComponent(vmName)}`)
+      setLocalAgentPreparation(localData)
+      setTargetVmName((current) => current || localData?.vm_name || vmName)
+      setSourceDiskFormat(localData?.primary_disk?.format || sourceDiskFormat || 'raw')
+
+      pushLog('Streaming local VM disk from local agent to bastion storage...')
+      const bastionData = await api.fetchJson(`/api/v1/migration/prepare-local-agent/${vmName}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          local_agent_base_url: localAgentBase,
+          local_source: source,
+          local_agent_token: localAgentToken,
+          target_vm_name: targetVmName || localData?.vm_name || vmName,
+          source_disk_format: localData?.primary_disk?.format || sourceDiskFormat || 'auto',
+        }),
+      })
+
+      setPreparedBundle(bastionData)
+      setSourceDiskPath(bastionData?.source_disk_path || '')
+      setSourceDiskFormat(bastionData?.source_disk_format || localData?.primary_disk?.format || sourceDiskFormat || 'raw')
+      setTargetVmName((current) => bastionData?.target_vm_name || current || localData?.vm_name || vmName)
+      setMigrationNotice('Local agent handoff completed. Disk is now on bastion and real migration can start from UI.')
+      pushLog(`Local agent handoff done. Bastion path: ${bastionData?.source_disk_path || 'n/a'}`)
     } catch (err) {
       handleError('Local agent prepare', err)
     } finally {
@@ -672,10 +689,6 @@ const HomePage = () => {
     redirectToConsole = false,
   }) => {
     if (!vmName) return pushLog('VM name required (source label)')
-    if (isLocalAgentSource(vmSource)) {
-      setMigrationNotice('Local agent discovery is wired, but real migration still needs the next handoff phase: sending the local disk from the user machine to the bastion.')
-      return pushLog('Real migration blocked: local agent disk handoff to bastion is not implemented yet.')
-    }
     if (!migrationGate.ready) return pushLog(migrationGate.message)
     if (!targetVmName) return pushLog('Target VM name is required')
     if (diskFiles.length === 0 && !trimmedSourceDiskPath && !inferredKvmDisk) {
@@ -766,7 +779,7 @@ const HomePage = () => {
 
   const startButtonLabel = () => {
     if (loading.start) return 'Loading...'
-    if (localAgentSourceSelected) return 'Start (Agent Pending)'
+    if (localAgentSourceSelected && !canStartRealMigration) return 'Start (Prepare Agent First)'
     if (canStartRealMigration) return 'Start And Open VM'
     return 'Start (Simulated)'
   }
@@ -950,7 +963,7 @@ const HomePage = () => {
               <Button variant="ghost" onClick={onPrepareBastion} disabled={loading.prepare || diskFiles.length === 0}>
                 {btnLabel('prepare') || 'Prepare On Bastion'}
               </Button>
-              <Button onClick={onOpenShift} disabled={loading.openshift || !migrationGate.ready || localAgentSourceSelected}>
+              <Button onClick={onOpenShift} disabled={loading.openshift || !canStartRealMigration}>
                 {btnLabel('openshift') || 'Migrate to OpenShift'}
               </Button>
             </>
@@ -961,7 +974,7 @@ const HomePage = () => {
           </p>
           {localAgentSourceSelected ? (
             <p className="hint">
-              Local agent source selected. Discovery and planning work in the UI now, but real migration stays disabled until we add disk handoff from the user machine to the bastion.
+              Local agent source selected. Use <strong>Prepare Via Agent</strong> to copy the disk to bastion, then run real migration from that prepared bastion path.
             </p>
           ) : null}
           <FieldGrid>
@@ -1059,7 +1072,7 @@ const HomePage = () => {
           ) : (
             <p className="hint">
               {localAgentSourceSelected
-                ? 'No browser file is needed for local-agent discovery. Use Prepare Via Agent to fetch the local disk metadata.'
+                ? 'No browser file is needed for local-agent discovery. Use Prepare Via Agent to fetch VM metadata and transfer the primary disk to bastion.'
                 : 'No local file selected. The migration will use the bastion disk path field if you submit now.'}
             </p>
           )}

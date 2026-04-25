@@ -8,10 +8,12 @@ from __future__ import annotations
 import logging
 import platform
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from src.config import config
 from src.discovery.kvm_discoverer import KVMDiscoverer
@@ -69,6 +71,22 @@ def _select_primary_disk(details: Dict) -> Dict:
             detail="No primary disk was detected for this VM.",
         )
     return candidates[0]
+
+
+def _resolve_vm_details(source: str, vm_name: str) -> tuple[str, Dict]:
+    normalized = (source or "").lower().strip()
+    if normalized == "kvm":
+        _ensure_local_kvm_connected()
+        details = kvm_discoverer.get_vm_details(vm_name)
+    elif normalized in {"hyperv", "hyper-v"}:
+        normalized = "hyperv"
+        details = hyperv_discoverer.get_vm_details(vm_name)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported local source: {source}")
+
+    if details is None:
+        raise HTTPException(status_code=404, detail=f"VM '{vm_name}' not found")
+    return normalized, details
 
 
 @app.on_event("shutdown")
@@ -144,17 +162,7 @@ async def get_hyperv(vm_name: str, _: None = Depends(_require_local_agent_auth))
 
 @app.get("/api/v1/prepare/{source}/{vm_name}")
 async def prepare_vm(source: str, vm_name: str, _: None = Depends(_require_local_agent_auth)):
-    normalized = (source or "").lower().strip()
-    if normalized == "kvm":
-        _ensure_local_kvm_connected()
-        details = kvm_discoverer.get_vm_details(vm_name)
-    elif normalized in {"hyperv", "hyper-v"}:
-        details = hyperv_discoverer.get_vm_details(vm_name)
-    else:
-        raise HTTPException(status_code=400, detail=f"Unsupported local source: {source}")
-
-    if details is None:
-        raise HTTPException(status_code=404, detail=f"VM '{vm_name}' not found")
+    normalized, details = _resolve_vm_details(source, vm_name)
 
     primary_disk = _select_primary_disk(details)
     return {
@@ -168,10 +176,38 @@ async def prepare_vm(source: str, vm_name: str, _: None = Depends(_require_local
         },
         "status": "ready-for-next-phase",
         "next_action": (
-            "Expose this local agent to the frontend, then add a backend handoff "
-            "for disk upload/streaming from the user machine to the bastion."
+            "Call the bastion endpoint /api/v1/migration/prepare-local-agent/{vm_name} "
+            "to stream this primary disk to bastion storage."
         ),
     }
+
+
+@app.get("/api/v1/handoff/{source}/{vm_name}")
+async def handoff_vm_disk(source: str, vm_name: str, _: None = Depends(_require_local_agent_auth)):
+    normalized, details = _resolve_vm_details(source, vm_name)
+    primary_disk = _select_primary_disk(details)
+    raw_path = (primary_disk.get("path") or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="Primary disk path is empty")
+
+    disk_path = Path(raw_path).expanduser()
+    if not disk_path.exists() or not disk_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Disk file not found: {disk_path}")
+
+    disk_format = primary_disk.get("format") or disk_path.suffix.lstrip(".") or "raw"
+    headers = {
+        "X-VM-Name": vm_name,
+        "X-VM-Source": normalized,
+        "X-Disk-Path": str(disk_path),
+        "X-Disk-Format": str(disk_format),
+        "X-Disk-Bus": str(primary_disk.get("bus") or "auto"),
+    }
+    return FileResponse(
+        path=str(disk_path),
+        media_type="application/octet-stream",
+        filename=disk_path.name,
+        headers=headers,
+    )
 
 
 if __name__ == "__main__":

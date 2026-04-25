@@ -25,7 +25,7 @@ const statCards = [
 
 const DashboardPage = () => {
   const { token } = useAuth()
-  const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000')
+  const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000')
   const [health, setHealth] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)

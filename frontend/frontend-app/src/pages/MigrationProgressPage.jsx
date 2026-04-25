@@ -5,75 +5,95 @@ import Input from '../components/Input'
 import { createApi } from '../services/api'
 import { useAuth } from '../hooks/useAuth'
 
-const steps = ['Upload', 'Convert', 'Import', 'Deploy']
+const doneStates = new Set(['completed', 'done', 'success', 'succeeded'])
 
-const stepStateFromProgress = (progress) => {
-  const completed = Math.floor(progress / 25)
-  return steps.map((step, index) => {
-    if (index < completed) return { step, state: 'Done' }
-    if (index === completed) return { step, state: 'Running' }
-    return { step, state: 'Pending' }
-  })
+const toneFromStatus = (status) => {
+  const s = (status || '').toLowerCase()
+  if (s.includes('fail') || s.includes('error')) return 'Failed'
+  if (doneStates.has(s)) return 'Done'
+  if (!s) return 'Pending'
+  return 'Running'
 }
 
 const MigrationProgressPage = () => {
   const { token } = useAuth()
-  const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000')
+  const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000')
   const [jobId, setJobId] = useState('')
-  const [migration, setMigration] = useState(null)
+  const [jobs, setJobs] = useState([])
+  const [statusData, setStatusData] = useState(null)
   const [error, setError] = useState('')
-  const [liveLogs, setLiveLogs] = useState([])
-  const [cancelled, setCancelled] = useState(false)
+  const [loading, setLoading] = useState(false)
 
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
 
-  useEffect(() => {
-    if (!jobId || cancelled) return undefined
-    const tick = setInterval(async () => {
-      try {
-        const data = await api.fetchJson(`/api/v1/migration/status/${jobId}`)
-        setMigration(data)
-        setError('')
-      } catch (err) {
-        setError(err.message || 'Failed to fetch status')
-      }
-    }, 2500)
-    return () => clearInterval(tick)
-  }, [api, jobId, cancelled])
+  const refreshJobs = async () => {
+    const data = await api.fetchJson('/api/v1/migration/jobs')
+    setJobs(data || [])
+    if (!jobId && data?.[0]?.job_id) setJobId(data[0].job_id)
+  }
+
+  const refreshStatus = async (id) => {
+    if (!id) return
+    const data = await api.fetchJson(`/api/v1/migration/status/${encodeURIComponent(id)}`)
+    setStatusData(data)
+  }
+
+  const refreshAll = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      await refreshJobs()
+      await refreshStatus(jobId)
+    } catch (err) {
+      setError(err.message || 'Failed to refresh migration progress')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    if (!jobId || cancelled) return undefined
-    const logTicker = setInterval(() => {
-      setLiveLogs((prev) => {
-        const time = new Date().toLocaleTimeString()
-        const next = `${time} [INFO] Processing ${jobId}...`
-        return [...prev.slice(-11), next]
-      })
-    }, 2200)
-    return () => clearInterval(logTicker)
-  }, [jobId, cancelled])
+    refreshAll()
+  }, [])
 
-  const progress = migration?.progress ?? (cancelled ? 0 : 35)
-  const eta = cancelled ? 'Cancelled' : `${Math.max(2, Math.ceil((100 - progress) / 8))} min`
-  const timeline = stepStateFromProgress(progress)
+  useEffect(() => {
+    if (!jobId) return
+    refreshStatus(jobId).catch((err) => setError(err.message || 'Failed to load status'))
+    const timer = window.setInterval(() => {
+      refreshStatus(jobId).catch(() => {})
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [jobId])
+
+  const steps = Array.isArray(statusData?.steps) ? statusData.steps : []
+  const completed = steps.filter((step) => doneStates.has((step.status || '').toLowerCase())).length
+  const progress = steps.length ? Math.round((completed / steps.length) * 100) : 0
+
+  const logs = Array.isArray(statusData?.logs) ? statusData.logs.slice(-20) : []
 
   return (
     <div className="page-shell">
       <header className="page-header">
         <div>
           <h1>Migration Progress</h1>
-          <p>Track each pipeline step with live log updates and estimated completion time.</p>
+          <p>Track live job steps and backend logs in real time.</p>
         </div>
       </header>
 
       <section className="grid">
         <Card
-          title="Real-Time Job Tracker"
+          title="Job Tracker"
           actions={(
             <>
-              <Input value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="http://localhost:8000" />
-              <Input value={jobId} onChange={(e) => setJobId(e.target.value)} placeholder="job id" />
-              <Button variant="ghost" onClick={() => setCancelled(true)} disabled={!jobId || cancelled}>Cancel</Button>
+              <Input value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="http://10.9.21.90:8000" />
+              <select className="input" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+                <option value="">Select a job</option>
+                {jobs.map((job) => (
+                  <option key={job.job_id} value={job.job_id}>
+                    {job.vm_name} - {job.job_id}
+                  </option>
+                ))}
+              </select>
+              <Button onClick={refreshAll} disabled={loading}>{loading ? 'Refreshing...' : 'Refresh'}</Button>
             </>
           )}
         >
@@ -82,26 +102,32 @@ const MigrationProgressPage = () => {
             <div className="progress-fill" style={{ width: `${progress}%` }} />
           </div>
           <div className="row-between">
-            <p className="micro">Current Status: {cancelled ? 'Cancelled' : (migration?.status || 'In progress')}</p>
-            <p className="micro">ETA: {eta}</p>
+            <p className="micro">Status: {statusData?.status || 'No job selected'}</p>
+            <p className="micro">Progress: {progress}%</p>
           </div>
         </Card>
 
         <Card title="Step Timeline">
           <div className="timeline">
-            {timeline.map((item) => (
-              <div key={item.step} className="timeline-row">
-                <span>{item.step}</span>
-                <span className={`pill pill-${item.state.toLowerCase()}`}>{item.state}</span>
+            {steps.length === 0 ? <div className="micro">No step data yet.</div> : null}
+            {steps.map((item) => (
+              <div key={item.name} className="timeline-row">
+                <span>{item.name}</span>
+                <span className={`pill pill-${toneFromStatus(item.status).toLowerCase()}`}>{toneFromStatus(item.status)}</span>
               </div>
             ))}
           </div>
         </Card>
 
-        <Card className="wide" title="Live Logs (WebSocket-ready view)" hint="Hook this panel to your backend WebSocket stream when available.">
+        <Card className="wide" title="Live Logs">
           <div className="log">
-            {liveLogs.length === 0 ? <div>Waiting for logs...</div> : null}
-            {liveLogs.map((line) => <div key={line}>{line}</div>)}
+            {logs.length === 0 ? <div>Waiting for logs...</div> : null}
+            {logs.map((line, idx) => {
+              if (typeof line === 'string') return <div key={`${line}-${idx}`}>{line}</div>
+              const ts = line?.timestamp ? new Date(line.timestamp).toLocaleTimeString() : '--:--:--'
+              const level = (line?.level || 'info').toUpperCase()
+              return <div key={`${ts}-${idx}`}>[{ts}] [{level}] {line?.message || ''}</div>
+            })}
           </div>
         </Card>
       </section>

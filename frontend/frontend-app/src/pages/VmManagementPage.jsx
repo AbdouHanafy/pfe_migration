@@ -1,20 +1,47 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import Card from '../components/Card'
 import Button from '../components/Button'
+import Input from '../components/Input'
+import { createApi } from '../services/api'
+import { useAuth } from '../hooks/useAuth'
 
-const vmSeed = [
-  { id: 'vm-501', name: 'erp-vm', namespace: 'prod-vms', status: 'Running', cpu: 54, ram: 61, disk: 73, console: 'https://console-openshift.example/vm/erp-vm' },
-  { id: 'vm-502', name: 'legacy-payroll', namespace: 'finance-vms', status: 'Stopped', cpu: 0, ram: 0, disk: 49, console: 'https://console-openshift.example/vm/legacy-payroll' },
-  { id: 'vm-503', name: 'analytics-node', namespace: 'data-vms', status: 'Running', cpu: 22, ram: 43, disk: 58, console: 'https://console-openshift.example/vm/analytics-node' },
-]
-
-const clampUsage = (value) => `${Math.min(100, Math.max(0, value))}%`
+const normalizeSource = (vm, source) => ({
+  ...vm,
+  source,
+  cpu_count: vm.cpu_count || vm.specs?.cpus || 0,
+  memory_mb: vm.memory_mb || vm.specs?.memory_mb || 0,
+  disks_count: Array.isArray(vm.disks) ? vm.disks.length : 0,
+})
 
 const VmManagementPage = () => {
-  const [vms, setVms] = useState(vmSeed)
+  const { token } = useAuth()
+  const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000')
+  const [vms, setVms] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
-  const updateStatus = (id, status) => {
-    setVms((prev) => prev.map((vm) => (vm.id === id ? { ...vm, status } : vm)))
+  const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
+
+  const refresh = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      const [kvm, ws, esxi] = await Promise.all([
+        api.fetchJson('/api/v1/discovery/kvm').catch(() => []),
+        api.fetchJson('/api/v1/discovery/vmware-workstation').catch(() => []),
+        api.fetchJson('/api/v1/discovery/vmware-esxi').catch(() => []),
+      ])
+
+      setVms([
+        ...kvm.map((vm) => normalizeSource(vm, 'kvm')),
+        ...ws.map((vm) => normalizeSource(vm, 'vmware-workstation')),
+        ...esxi.map((vm) => normalizeSource(vm, 'vmware-esxi')),
+      ])
+    } catch (err) {
+      setError(err.message || 'Failed to discover VMs')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -22,41 +49,39 @@ const VmManagementPage = () => {
       <header className="page-header">
         <div>
           <h1>VM Management</h1>
-          <p>Operate migrated OpenShift VMs and monitor resource usage from one panel.</p>
+          <p>Live discovery view across KVM, VMware Workstation, and VMware ESXi.</p>
         </div>
       </header>
 
       <section className="grid">
-        <Card className="wide" title="Migrated VMs">
+        <Card
+          className="wide"
+          title="Discovered VMs"
+          actions={(
+            <>
+              <Input value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="http://10.9.21.90:8000" />
+              <Button onClick={refresh} disabled={loading}>
+                {loading ? 'Refreshing...' : 'Refresh'}
+              </Button>
+            </>
+          )}
+        >
+          {error ? <p className="error">{error}</p> : null}
           <div className="list vm-list">
+            {vms.length === 0 ? <p className="empty">No VMs discovered yet.</p> : null}
             {vms.map((vm) => (
-              <div key={vm.id} className="item item-stack">
+              <div key={`${vm.source}-${vm.uuid || vm.name}`} className="item item-stack">
                 <div className="row-between">
                   <div>
                     <strong>{vm.name}</strong>
-                    <p className="micro">{vm.namespace}</p>
+                    <p className="micro">{vm.source}</p>
                   </div>
-                  <span className="pill">{vm.status}</span>
+                  <span className="pill">{vm.state || 'unknown'}</span>
                 </div>
                 <div className="row">
-                  <Button variant="ghost" onClick={() => updateStatus(vm.id, 'Running')}>Start</Button>
-                  <Button variant="ghost" onClick={() => updateStatus(vm.id, 'Stopped')}>Stop</Button>
-                  <Button variant="ghost" onClick={() => updateStatus(vm.id, 'Restarting')}>Restart</Button>
-                  <Button onClick={() => window.open(vm.console, '_blank', 'noopener,noreferrer')}>Open VNC Console</Button>
-                </div>
-                <div className="usage-grid">
-                  <div>
-                    <p className="micro">CPU</p>
-                    <div className="progress-track"><div className="progress-fill" style={{ width: clampUsage(vm.cpu) }} /></div>
-                  </div>
-                  <div>
-                    <p className="micro">RAM</p>
-                    <div className="progress-track"><div className="progress-fill" style={{ width: clampUsage(vm.ram) }} /></div>
-                  </div>
-                  <div>
-                    <p className="micro">Disk</p>
-                    <div className="progress-track"><div className="progress-fill" style={{ width: clampUsage(vm.disk) }} /></div>
-                  </div>
+                  <span className="micro">CPU: {vm.cpu_count || 0}</span>
+                  <span className="micro">RAM: {vm.memory_mb || 0} MB</span>
+                  <span className="micro">Disks: {vm.disks_count || 0}</span>
                 </div>
               </div>
             ))}
