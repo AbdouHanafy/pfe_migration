@@ -1,0 +1,70 @@
+﻿\documentclass[12pt,a4paper]{report}
+
+\usepackage[french]{babel}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{iftex}
+
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{newtxtext,newtxmath}
+\else
+  \usepackage{fontspec}
+  \setmainfont{Times New Roman}
+\fi
+
+\geometry{margin=2.5cm}
+\setstretch{1.15}
+\setlength{\parindent}{0.5cm}
+\setlength{\parskip}{0pt}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={Rapport de stage - Migration intelligente de VMs vers OpenShift},
+  pdfauthor={A_COMPLETER}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[R]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\titleformat{\chapter}[display]
+  {\bfseries\Huge}
+  {\chaptername\ \thechapter}
+  {0.5em}
+  {}
+
+\begin{document}
+
+\input{page-de-garde}
+
+\pagenumbering{roman}
+\input{00-remerciements}
+\tableofcontents
+\clearpage
+
+\pagenumbering{arabic}
+
+\input{01-introduction}
+\input{02-entreprise}
+\input{03-etude-problematique}
+\input{04-conception}
+\input{05-realisation}
+\input{06-resultats}
+\input{07-conclusion}
+
+\end{document}

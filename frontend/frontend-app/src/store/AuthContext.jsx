@@ -1,6 +1,5 @@
-import { createContext, useMemo, useState } from 'react'
-
-export const AuthContext = createContext(null)
+import { useMemo, useState } from 'react'
+import { AuthContext } from './auth-context.js'
 
 const tokenKey = 'vm_migration_token'
 

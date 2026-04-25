@@ -1,0 +1,32 @@
+﻿\chapter{Resultats et evaluation}
+
+\section{Scenario de validation}
+Deux types de cas ont ete testes:
+\begin{itemize}[leftmargin=1.2cm]
+  \item VM volumineuse avec disques segmentes,
+  \item petite VM de validation pour tester le pipeline complet.
+\end{itemize}
+
+\section{Resultats obtenus}
+Les essais ont permis de confirmer:
+\begin{itemize}[leftmargin=1.2cm]
+  \item la faisabilite d'un pipeline guide de migration,
+  \item l'interet du precheck local pour les VMs non accessibles,
+  \item l'importance de la preparation du stockage OpenShift.
+\end{itemize}
+
+\section{Limites observees}
+\begin{itemize}[leftmargin=1.2cm]
+  \item upload navigateur limite pour les tres gros volumes,
+  \item dependance forte a la configuration cluster,
+  \item besoin d'industrialiser encore la partie migration massive.
+\end{itemize}
+
+\section{A_COMPLETER: indicateurs chiffres}
+Ajouter ici un tableau avec:
+\begin{itemize}[leftmargin=1.2cm]
+  \item nombre de VMs testees,
+  \item taux de succes par etape (Analyze, Plan, Migrate),
+  \item temps moyen de traitement par scenario,
+  \item principales erreurs et actions correctives.
+\end{itemize}

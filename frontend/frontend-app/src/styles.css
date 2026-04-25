@@ -1,0 +1,104 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-base: #0a0f1e;
+  --color-surface: #111827;
+  --color-line: #1e2d4a;
+  --color-accent: #1d9e75;
+  --color-running: #ef9f27;
+  --color-failed: #d85a30;
+  --color-info: #378add;
+  --color-primary: #e8eef8;
+  --color-muted: #5a7a99;
+  --font-display: "Syne", sans-serif;
+  --font-mono: "Space Mono", monospace;
+}
+
+:root {
+  color: var(--color-primary);
+  background: var(--color-base);
+  font-family: "Syne", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.bg-grid {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(520px circle at 14% 10%, rgba(29, 158, 117, 0.12), transparent 60%),
+    radial-gradient(560px circle at 88% 6%, rgba(55, 138, 221, 0.15), transparent 66%),
+    radial-gradient(500px circle at 82% 84%, rgba(239, 159, 39, 0.12), transparent 70%),
+    #0a0f1e;
+}
+
+.shadow-panel {
+  box-shadow: 0 14px 32px rgba(4, 8, 16, 0.45);
+}
+
+.shadow-glow {
+  box-shadow: 0 0 14px rgba(29, 158, 117, 0.55);
+}
+
+.status-done {
+  border-left: 2px solid var(--color-accent);
+}
+
+.status-running {
+  border-left: 2px solid var(--color-running);
+}
+
+.status-failed {
+  border-left: 2px solid var(--color-failed);
+}
+
+.status-info {
+  border-left: 2px solid var(--color-info);
+}
+
+.badge-done {
+  color: var(--color-accent);
+  background: rgba(29, 158, 117, 0.12);
+}
+
+.badge-running {
+  color: var(--color-running);
+  background: rgba(239, 159, 39, 0.12);
+}
+
+.badge-failed {
+  color: var(--color-failed);
+  background: rgba(216, 90, 48, 0.12);
+}
+
+.badge-info {
+  color: var(--color-info);
+  background: rgba(55, 138, 221, 0.12);
+}
+
+.terminal-panel {
+  min-height: 340px;
+}
+
+.cursor-blink {
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}

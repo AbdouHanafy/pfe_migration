@@ -1,0 +1,28 @@
+﻿\chapter{Etude de la problematique et objectifs}
+
+\section{Problematique}
+La migration d'une VM classique vers OpenShift Virtualization est un processus sensible qui depend de plusieurs facteurs: format de disque, ressources CPU/RAM, connectivite reseau, stockage disponible dans le cluster et strategie de migration.
+
+Dans une approche manuelle, ces verifications sont longues et sujettes aux erreurs. Il devient donc necessaire d'introduire une solution capable de standardiser la preparation, d'anticiper les blocages et d'aider a la prise de decision.
+
+\section{Objectif general}
+L'objectif general est de developper une plateforme de migration intelligente de VMs vers OpenShift, avec un pipeline complet allant de la decouverte a la migration.
+
+\section{Objectifs specifiques}
+Les objectifs specifiques du projet sont:
+\begin{enumerate}[leftmargin=1.2cm]
+  \item decouvrir les VMs sources (VMware Workstation, KVM/libvirt),
+  \item analyser la compatibilite avec OpenShift Virtualization,
+  \item produire un plan de conversion technique,
+  \item recommander une strategie de migration,
+  \item executer et suivre la migration via les outils OpenShift/KubeVirt.
+\end{enumerate}
+
+\section{Demarche adoptee}
+La demarche suivie repose sur une progression iterative:
+\begin{itemize}[leftmargin=1.2cm]
+  \item stabiliser les fondations backend/frontend,
+  \item integrer les briques metier une a une,
+  \item tester sur des VMs reelles de taille differente,
+  \item corriger les blocages identifies sur le terrain.
+\end{itemize}

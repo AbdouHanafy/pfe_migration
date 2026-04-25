@@ -1,0 +1,68 @@
+﻿\chapter{Realisation}
+
+\section{Mise en place de l'environnement}
+La phase initiale a consiste a valider l'environnement d'execution:
+\begin{itemize}[leftmargin=1.2cm]
+  \item accessibilite du bastion,
+  \item lancement du backend FastAPI,
+  \item lancement du frontend React,
+  \item mise en place d'un tunnel SSH pour l'API,
+  \item configuration du kubeconfig pour l'acces cluster.
+\end{itemize}
+
+\section{Implementation du backend}
+Le backend expose les endpoints necessaires au pipeline de migration:
+\begin{itemize}[leftmargin=1.2cm]
+  \item decouverte des VMs,
+  \item analyse de compatibilite,
+  \item generation du plan,
+  \item orchestration de migration,
+  \item suivi d'etat des jobs.
+\end{itemize}
+
+Une attention particuliere a ete portee a l'authentification JWT afin d'aligner le comportement backend avec le frontend.
+
+\section{Implementation du frontend}
+Le frontend a ete transforme d'une interface de demonstration vers une interface de pilotage reelle:
+\begin{itemize}[leftmargin=1.2cm]
+  \item parcours d'authentification,
+  \item affichage de sante API,
+  \item lancement Analyze et Plan,
+  \item affichage des resultats,
+  \item suivi des identifiants de migration,
+  \item formulaire de migration reelle.
+\end{itemize}
+
+\section{Support des VMs VMware locales}
+Un mecanisme local a ete introduit pour les VMs non visibles depuis le bastion:
+\begin{itemize}[leftmargin=1.2cm]
+  \item lecture locale du fichier \texttt{.vmx},
+  \item extraction des caracteristiques utiles,
+  \item precheck local de compatibilite,
+  \item generation locale d'un plan de base.
+\end{itemize}
+
+\section{Gestion des disques VMDK split}
+Le pipeline a ete adapte pour prendre en charge les disques VMware segmentes
+(\texttt{-s001.vmdk}, \texttt{-s002.vmdk}, etc.), afin d'eviter les echecs de conversion.
+
+\section{Integration OpenShift}
+La migration reelle repose sur l'utilisation des outils \texttt{oc}, \texttt{virtctl} et \texttt{qemu-img}.
+Des ajustements ont ete necessaires sur le stockage cluster (StorageClass, PVC, HostPathProvisioner) pour stabiliser la chaine de deploiement.
+
+\section{Etat d'avancement et parties restantes}
+\textbf{Parties finalisees:}
+\begin{itemize}[leftmargin=1.2cm]
+  \item architecture generale,
+  \item pipeline applicatif principal,
+  \item precheck local VMware,
+  \item integration initiale OpenShift.
+\end{itemize}
+
+\textbf{Parties a completer dans le rapport:}
+\begin{itemize}[leftmargin=1.2cm]
+  \item captures d'ecran frontend/backend,
+  \item exemples de payload API,
+  \item valeurs exactes des mesures de performance,
+  \item sequence detaillee d'une migration reussie de bout en bout.
+\end{itemize}

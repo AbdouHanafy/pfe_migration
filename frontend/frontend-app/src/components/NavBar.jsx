@@ -13,9 +13,14 @@ const NavBar = () => {
 
   return (
     <nav className="nav">
-      <Link className="nav-brand" to="/">VM Control</Link>
+      <Link className="nav-brand" to="/">Migration Tool</Link>
       <div className="nav-links">
-        <NavLink to="/" end>Home</NavLink>
+        {token ? <NavLink to="/" end>Dashboard</NavLink> : null}
+        {token ? <NavLink to="/migrations/new">New Migration</NavLink> : null}
+        {token ? <NavLink to="/migrations/progress">Progress</NavLink> : null}
+        {token ? <NavLink to="/migrations/history">History</NavLink> : null}
+        {token ? <NavLink to="/vms">VMs</NavLink> : null}
+        {token ? <NavLink to="/settings">Settings</NavLink> : null}
         <NavLink to="/about">About</NavLink>
         {!token ? <NavLink to="/login">Login</NavLink> : null}
         {!token ? <NavLink to="/register">Register</NavLink> : null}

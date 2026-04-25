@@ -1,0 +1,40 @@
+﻿\chapter{Conception et architecture}
+
+\section{Vue d'ensemble}
+L'architecture retenue se base sur une separation claire entre:
+\begin{itemize}[leftmargin=1.2cm]
+  \item un frontend React execute sur le poste utilisateur,
+  \item un backend FastAPI execute sur le bastion,
+  \item un cluster OpenShift cible pour l'hebergement final des VMs.
+\end{itemize}
+
+Cette separation repond a une contrainte forte: certaines VMs locales ne sont pas directement accessibles depuis le bastion.
+
+\section{Architecture logicielle}
+Le projet est structure autour des modules suivants:
+\begin{itemize}[leftmargin=1.2cm]
+  \item \texttt{src/api}: endpoints REST,
+  \item \texttt{src/discovery}: decouverte des VMs,
+  \item \texttt{src/analysis}: analyse de compatibilite,
+  \item \texttt{src/conversion}: planification de conversion,
+  \item \texttt{src/migration}: orchestration des migrations,
+  \item \texttt{src/openshift}: integration avec les outils cluster,
+  \item \texttt{src/ml}: recommandation basee IA,
+  \item \texttt{frontend/frontend-app}: interface de pilotage.
+\end{itemize}
+
+\section{Choix techniques}
+\begin{itemize}[leftmargin=1.2cm]
+  \item Backend: FastAPI (Python)
+  \item Frontend: React + Vite
+  \item Outils de migration: \texttt{oc}, \texttt{virtctl}, \texttt{qemu-img}
+  \item Cible: OpenShift Virtualization (KubeVirt)
+\end{itemize}
+
+\section{Diagrammes a inserer}
+\textbf{A_COMPLETER:}
+\begin{itemize}[leftmargin=1.2cm]
+  \item diagramme d'architecture globale,
+  \item diagramme de sequence du pipeline Analyze -> Plan -> Migrate,
+  \item diagramme de classes (optionnel) pour les modules backend.
+\end{itemize}
