@@ -592,6 +592,120 @@ def _resolve_import_mode(import_mode: str | None) -> str:
     return normalized
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _build_health_payload() -> Dict:
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "services": {
+            "kvm_connection": kvm_discoverer.conn is not None,
+            "kvm_uri": kvm_discoverer.connection_uri,
+            "kvm_last_error": kvm_discoverer.last_error or None,
+            "vmware_esxi_configured": vmware_esxi_discoverer.is_configured,
+            "tools": check_tools()
+        }
+    }
+
+
+def _build_dashboard_overview() -> Dict:
+    health = _build_health_payload()
+    jobs = job_store.list_jobs()
+    now = datetime.now(timezone.utc)
+
+    completed = [job for job in jobs if (job.status or "").lower() == "completed"]
+    failed = [job for job in jobs if "fail" in (job.status or "").lower() or "error" in (job.status or "").lower()]
+    running = [job for job in jobs if (job.status or "").lower() in {"running", "queued", "pending"}]
+
+    considered = len(completed) + len(failed)
+    success_rate = round((len(completed) / considered) * 100, 1) if considered else 0.0
+
+    durations_minutes: List[float] = []
+    for job in completed:
+        created = _parse_iso_datetime(job.created_at)
+        updated = _parse_iso_datetime(job.updated_at)
+        if created and updated and updated >= created:
+            durations_minutes.append((updated - created).total_seconds() / 60.0)
+    avg_duration_minutes = round(sum(durations_minutes) / len(durations_minutes), 1) if durations_minutes else 0.0
+
+    week_ago = now - timedelta(days=7)
+    two_weeks_ago = now - timedelta(days=14)
+    last_week_completed = 0
+    prev_week_completed = 0
+    for job in completed:
+        created = _parse_iso_datetime(job.created_at)
+        if not created:
+            continue
+        if created >= week_ago:
+            last_week_completed += 1
+        elif two_weeks_ago <= created < week_ago:
+            prev_week_completed += 1
+    weekly_delta = last_week_completed - prev_week_completed
+
+    tools = health["services"].get("tools", {})
+    tools_ok = sum(1 for value in tools.values() if value)
+    tools_total = len(tools)
+
+    active_migrations = []
+    for job in running[:8]:
+        steps = job.steps or []
+        done_steps = sum(1 for step in steps if (step.get("status") or "").lower() == "completed")
+        progress = round((done_steps / len(steps)) * 100) if steps else 0
+        active_migrations.append({
+            "job_id": job.job_id,
+            "vm_name": job.vm_name,
+            "status": job.status,
+            "progress": progress
+        })
+
+    alerts: List[Dict] = []
+    if not health["services"].get("kvm_connection", False):
+        alerts.append({
+            "id": "kvm-connection",
+            "level": "warning",
+            "message": f"KVM connection is down for URI {health['services'].get('kvm_uri', 'unknown')}."
+        })
+    for tool_name, is_ok in tools.items():
+        if not is_ok:
+            alerts.append({
+                "id": f"tool-{tool_name}",
+                "level": "warning",
+                "message": f"Required backend tool '{tool_name}' is not available."
+            })
+    for job in failed[:6]:
+        alerts.append({
+            "id": f"job-{job.job_id}",
+            "level": "critical",
+            "message": f"Migration job {job.job_id} for VM '{job.vm_name}' failed: {job.error or 'unknown reason'}"
+        })
+
+    return {
+        "status": "ok",
+        "timestamp": now.isoformat(),
+        "health": health,
+        "stats": {
+            "vms_migrated_total": len(completed),
+            "vms_migrated_last_7d": last_week_completed,
+            "vms_migrated_weekly_delta": weekly_delta,
+            "success_rate_percent": success_rate,
+            "avg_migration_time_minutes": avg_duration_minutes,
+            "active_operators_ok": tools_ok,
+            "active_operators_total": tools_total,
+            "running_jobs": len(running),
+            "failed_jobs": len(failed),
+        },
+        "active_migrations": active_migrations,
+        "alerts": alerts[:12]
+    }
+
+
 @app.get("/api/v1/openshift/imports/{filename}")
 async def serve_openshift_import_file(filename: str):
     imports_dir = Path(config.DATA_DIR) / "imports"
@@ -637,6 +751,7 @@ async def root(_: None = Depends(_require_auth)):
         "status": "running",
         "endpoints": {
             "health": "/health",
+            "dashboard_overview": "/api/v1/dashboard/overview",
             "docs": "/docs",
             "discovery": "/api/v1/discovery/kvm",
             "discovery_vmware_esxi": "/api/v1/discovery/vmware-esxi",
@@ -670,6 +785,12 @@ async def health_check(_: None = Depends(_require_auth)):
             "tools": check_tools()
         }
     }
+
+@app.get("/api/v1/dashboard/overview")
+async def dashboard_overview(_: None = Depends(_require_auth)):
+    """Real dashboard data for frontend stats, active jobs and alerts."""
+    return _build_dashboard_overview()
+
 
 @app.post("/api/v1/auth/register")
 async def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
