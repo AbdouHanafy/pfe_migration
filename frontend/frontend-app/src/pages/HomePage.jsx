@@ -149,6 +149,7 @@ const estimateMigrationTime = (importMode, hasLocalFiles) => {
 }
 
 const STORAGE_KEY = 'migration-control-room-state'
+const LOG_STORAGE_KEY = 'migration-control-room-logs'
 
 const HomePage = () => {
   const [apiBase, setApiBase] = useState(
@@ -199,7 +200,7 @@ const HomePage = () => {
 
   const { token } = useAuth()
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
-  const { logs, pushLog } = useLogger()
+  const { logs, pushLog } = useLogger(LOG_STORAGE_KEY)
   const migrationGate = useMemo(() => buildMigrationGate(analysis, vmName), [analysis, vmName])
   const trimmedSourceDiskPath = sourceDiskPath.trim()
   const localAgentSourceSelected = isLocalAgentSource(vmSource)
@@ -222,6 +223,9 @@ const HomePage = () => {
       if (saved.vmName) setVmName(saved.vmName)
       if (saved.vmSource) setVmSource(saved.vmSource)
       if (saved.analysis) setAnalysis(saved.analysis)
+      if (saved.migration) setMigration(saved.migration)
+      if (saved.jobId) setJobId(saved.jobId)
+      if (saved.openShiftResult) setOpenShiftResult(saved.openShiftResult)
       if (saved.sourceDiskPath) setSourceDiskPath(saved.sourceDiskPath)
       if (saved.sourceDiskFormat) setSourceDiskFormat(saved.sourceDiskFormat)
       if (saved.targetVmName) setTargetVmName(saved.targetVmName)
@@ -232,6 +236,10 @@ const HomePage = () => {
       if (saved.diskBus) setDiskBus(saved.diskBus)
       if (saved.namespace) setNamespace(saved.namespace)
       if (saved.importMode) setImportMode(saved.importMode)
+      if (saved.migrationNotice) setMigrationNotice(saved.migrationNotice)
+      if (saved.prepareProgress) setPrepareProgress(saved.prepareProgress)
+      if (saved.preparedBundle) setPreparedBundle(saved.preparedBundle)
+      if (saved.localAgentPreparation) setLocalAgentPreparation(saved.localAgentPreparation)
     } catch {
       // Ignore invalid persisted UI state.
     }
@@ -245,6 +253,9 @@ const HomePage = () => {
         localAgentBase,
         localAgentToken,
         analysis,
+        migration,
+        jobId,
+        openShiftResult,
         sourceDiskPath,
         sourceDiskFormat,
         targetVmName,
@@ -255,11 +266,38 @@ const HomePage = () => {
         diskBus,
         namespace,
         importMode,
+        migrationNotice,
+        prepareProgress,
+        preparedBundle,
+        localAgentPreparation,
       }))
     } catch {
       // Ignore persistence issues.
     }
-  }, [vmName, vmSource, localAgentBase, localAgentToken, analysis, sourceDiskPath, sourceDiskFormat, targetVmName, pvcSize, memory, cpuCores, firmware, diskBus, namespace, importMode])
+  }, [
+    vmName,
+    vmSource,
+    localAgentBase,
+    localAgentToken,
+    analysis,
+    migration,
+    jobId,
+    openShiftResult,
+    sourceDiskPath,
+    sourceDiskFormat,
+    targetVmName,
+    pvcSize,
+    memory,
+    cpuCores,
+    firmware,
+    diskBus,
+    namespace,
+    importMode,
+    migrationNotice,
+    prepareProgress,
+    preparedBundle,
+    localAgentPreparation,
+  ])
 
   useEffect(() => {
     if (!inferredKvmDisk || vmSource !== 'kvm') return
