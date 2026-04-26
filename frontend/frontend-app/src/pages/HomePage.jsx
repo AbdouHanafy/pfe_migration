@@ -193,6 +193,7 @@ const HomePage = () => {
   const [namespace, setNamespace] = useState('vm-migration')
   const [importMode, setImportMode] = useState('http')
   const [migrationNotice, setMigrationNotice] = useState('')
+  const [prepareProgress, setPrepareProgress] = useState(null)
   const [preparedBundle, setPreparedBundle] = useState(null)
   const [localAgentPreparation, setLocalAgentPreparation] = useState(null)
 
@@ -619,6 +620,12 @@ const HomePage = () => {
       const authHeaders = token ? { Authorization: `Bearer ${token}` } : {}
       const reportProgress = (uploadedBytes) => {
         const percent = totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)) : 100
+        setPrepareProgress({
+          uploadedBytes,
+          totalBytes,
+          percent,
+          active: percent < 100,
+        })
         setMigrationNotice(`Uploading files to the bastion: ${percent}% (${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)})`)
       }
 
@@ -690,9 +697,16 @@ const HomePage = () => {
       setTargetVmName(data.target_vm_name || targetVmName || vmName)
       setVmName(data.vm_name || vmName)
       setDiskFiles([])
+      setPrepareProgress({
+        uploadedBytes: totalBytes,
+        totalBytes,
+        percent: 100,
+        active: false,
+      })
       setMigrationNotice('Files prepared on the bastion. The bastion disk path was filled automatically.')
       pushLog(`Bastion path ready: ${data.source_disk_path}`)
     } catch (err) {
+      setPrepareProgress((current) => current ? { ...current, active: false } : null)
       handleError('Prepare on bastion', err)
     } finally {
       setActionLoading('prepare', false)
@@ -1032,6 +1046,24 @@ const HomePage = () => {
             <p className="hint">
               Local agent source selected. Use <strong>Prepare Via Agent</strong> to copy the disk to bastion, then run real migration from that prepared bastion path.
             </p>
+          ) : null}
+          {prepareProgress ? (
+            <div className="upload-progress-card">
+              <div className="upload-progress-head">
+                <strong>Prepare Upload Progress</strong>
+                <span>{prepareProgress.percent}%</span>
+              </div>
+              <div className="upload-progress-bar" aria-hidden="true">
+                <div
+                  className={`upload-progress-fill${prepareProgress.active ? ' active' : ''}`}
+                  style={{ width: `${prepareProgress.percent}%` }}
+                />
+              </div>
+              <div className="upload-progress-meta">
+                <span>{formatBytes(prepareProgress.uploadedBytes)} uploaded</span>
+                <span>{formatBytes(prepareProgress.totalBytes)} total</span>
+              </div>
+            </div>
           ) : null}
           <FieldGrid>
             <label className="field">
