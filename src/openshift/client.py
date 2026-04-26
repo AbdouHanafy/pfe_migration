@@ -53,6 +53,28 @@ def _run(cmd: list[str]) -> Tuple[int, str, str]:
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
+def _diagnose_dv_blocker(namespace: str, dv_name: str, payload: Dict) -> str:
+    claim_name = payload.get("status", {}).get("claimName") or dv_name
+    code, out, err = _run(["oc", "describe", "pvc", claim_name, "-n", namespace])
+    describe_output = out or err
+    if code != 0 or not describe_output:
+        return ""
+
+    if "WaitForFirstConsumer" in describe_output and "Used By:     <none>" in describe_output:
+        return (
+            f"Cluster storage deadlock: PVC '{claim_name}' is waiting for first consumer, "
+            "but no CDI importer pod is consuming it."
+        )
+
+    if "selected-node:" in describe_output and "master-1.ocp.pfe.lan" in describe_output:
+        return (
+            f"PVC '{claim_name}' was pinned to master-1.ocp.pfe.lan, which is not currently usable "
+            "for this migration."
+        )
+
+    return ""
+
+
 def _run_qemu_convert_with_progress(cmd: list[str], progress_callback: ProgressCallback | None = None) -> Tuple[int, str, str]:
     process = subprocess.Popen(
         cmd,
@@ -398,6 +420,7 @@ def wait_for_data_volume(
     progress_callback: ProgressCallback | None = None
 ) -> Dict:
     deadline = time.time() + timeout_seconds
+    pending_deadline = time.time() + min(timeout_seconds, 120)
     last_phase = ""
     last_progress = ""
     while time.time() < deadline:
@@ -421,6 +444,12 @@ def wait_for_data_volume(
             return payload
         if phase in {"Failed", "Unknown"}:
             raise RuntimeError(f"DataVolume '{dv_name}' failed with phase '{phase}' and progress '{progress or 'N/A'}'.")
+        if phase in {"Pending", "PendingPopulation", "ImportScheduled"} and time.time() >= pending_deadline:
+            blocker = _diagnose_dv_blocker(namespace, dv_name, payload)
+            if blocker:
+                raise RuntimeError(
+                    f"DataVolume '{dv_name}' is blocked in phase '{phase}': {blocker}"
+                )
         last_phase = phase or last_phase
         last_progress = progress or last_progress
         time.sleep(2)
