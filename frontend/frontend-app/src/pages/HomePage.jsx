@@ -116,6 +116,8 @@ const formatJobLogLine = (entry) => {
   return `${timestamp} [${level}] ${entry.message || ''}`
 }
 
+const BASTION_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+
 const buildOpenShiftPayload = ({
   sourceDiskPath,
   sourceDiskFormat,
@@ -613,19 +615,73 @@ const HomePage = () => {
     setError(null)
     setActionLoading('prepare', true)
     try {
-      setMigrationNotice('Uploading files to the bastion. This may take a while for large disks.')
-      pushLog('Uploading local VM files to the bastion so the disk path can be filled automatically.')
+      const totalBytes = diskFiles.reduce((sum, file) => sum + (file.size || 0), 0)
+      const authHeaders = token ? { Authorization: `Bearer ${token}` } : {}
+      const reportProgress = (uploadedBytes) => {
+        const percent = totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)) : 100
+        setMigrationNotice(`Uploading files to the bastion: ${percent}% (${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)})`)
+      }
 
-      const formData = new FormData()
-      diskFiles.forEach((file) => {
-        formData.append('disk_files', file)
-      })
-      formData.append('target_vm_name', targetVmName || vmName)
-      formData.append('source_disk_format', sourceDiskFormat || 'auto')
+      reportProgress(0)
+      pushLog('Uploading local VM files to the bastion in chunks so the disk path can be filled automatically.')
 
-      const data = await api.fetchJson(`/api/v1/migration/prepare-upload/${vmName}`, {
+      const session = await api.fetchJson(`/api/v1/migration/prepare-upload-session/${vmName}`, {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target_vm_name: targetVmName || vmName,
+          source_disk_format: sourceDiskFormat || 'auto',
+          files: diskFiles.map((file) => ({
+            name: file.name,
+            size: file.size,
+          })),
+        }),
+      })
+
+      let uploadedBytes = 0
+      let lastReportedPercent = -10
+      for (const file of diskFiles) {
+        const totalChunks = Math.max(1, Math.ceil(file.size / BASTION_UPLOAD_CHUNK_SIZE))
+        pushLog(`Uploading ${file.name} in ${totalChunks} chunk(s)...`)
+
+        for (let offset = 0; offset < file.size || (file.size === 0 && offset === 0); offset += BASTION_UPLOAD_CHUNK_SIZE) {
+          const chunk = file.slice(offset, Math.min(file.size, offset + BASTION_UPLOAD_CHUNK_SIZE))
+          const params = new URLSearchParams({
+            filename: file.name,
+            offset: `${offset}`,
+            total_size: `${file.size}`,
+          })
+
+          const response = await fetch(`${apiBase}/api/v1/migration/upload-session/${session.session_id}/chunk?${params.toString()}`, {
+            method: 'POST',
+            headers: {
+              ...authHeaders,
+              'Content-Type': 'application/octet-stream',
+            },
+            body: chunk,
+          })
+
+          if (!response.ok) {
+            const text = await response.text()
+            throw new Error(`${response.status} ${response.statusText}: ${text}`)
+          }
+
+          uploadedBytes += chunk.size
+          reportProgress(uploadedBytes)
+          const percent = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 100
+          if (percent >= lastReportedPercent + 10 || percent === 100) {
+            pushLog(`Bastion upload progress: ${percent}%`)
+            lastReportedPercent = percent
+          }
+
+          if (file.size === 0) {
+            break
+          }
+        }
+      }
+
+      const data = await api.fetchJson(`/api/v1/migration/upload-session/${session.session_id}/complete`, {
+        method: 'POST',
       })
 
       setPreparedBundle(data)

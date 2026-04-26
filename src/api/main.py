@@ -4,12 +4,13 @@ API principale pour le système de migration
 
 import os
 import shutil
+import json
 from pathlib import Path
 import re
 from uuid import uuid4
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, status, Depends, Header, Query, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, status, Depends, Header, Query, BackgroundTasks, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import List, Dict, Optional
@@ -202,6 +203,17 @@ class LocalAgentPrepareRequest(BaseModel):
     source_disk_format: str = Field("auto", description="Optional source disk format override")
 
 
+class UploadSessionFile(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    size: int = Field(..., ge=0)
+
+
+class UploadSessionStartRequest(BaseModel):
+    target_vm_name: str = Field("", description="Target VM name used for the bastion upload folder")
+    source_disk_format: str = Field("auto", description="Preferred source disk format")
+    files: List[UploadSessionFile] = Field(default_factory=list)
+
+
 def _sanitize_filename(filename: str) -> str:
     safe_name = Path(filename or "disk.img").name.strip()
     return safe_name or "disk.img"
@@ -311,6 +323,40 @@ def _build_uploaded_bundle_summary(upload_dir: Path, filenames: List[str], targe
 def _persist_uploaded_disks(uploads: List[UploadFile], target_vm_name: str) -> Dict:
     upload_dir, saved_names = _persist_uploaded_bundle(uploads, target_vm_name)
     return _build_uploaded_bundle_summary(upload_dir, saved_names, target_vm_name)
+
+
+def _upload_sessions_root() -> Path:
+    root = Path(config.DATA_DIR) / "upload_sessions"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _upload_session_dir(session_id: str) -> Path:
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", session_id)
+    if not safe_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid upload session id.")
+    return _upload_sessions_root() / safe_id
+
+
+def _upload_session_manifest_path(session_id: str) -> Path:
+    return _upload_session_dir(session_id) / "manifest.json"
+
+
+def _read_upload_session(session_id: str) -> Dict:
+    manifest_path = _upload_session_manifest_path(session_id)
+    if not manifest_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Upload session '{session_id}' not found.")
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Invalid upload session metadata: {exc}") from exc
+
+
+def _write_upload_session(session_id: str, payload: Dict) -> None:
+    session_dir = _upload_session_dir(session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = _upload_session_manifest_path(session_id)
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
 def _extract_filename_from_handoff(headers: httpx.Headers, fallback: str) -> str:
@@ -1058,6 +1104,158 @@ async def prepare_uploaded_disk_for_bastion(
         "source_disk_format": effective_format,
         "bundle": bundle,
         "message": "Files uploaded to the bastion. You can now run the real migration using the prepared bastion path."
+    }
+
+
+@app.post("/api/v1/migration/prepare-upload-session/{vm_name}")
+async def start_prepare_upload_session(
+    vm_name: str,
+    req: UploadSessionStartRequest,
+    _: None = Depends(_require_auth)
+):
+    """Create a resumable bastion upload session for large local VM bundles."""
+    valid_files = [item for item in req.files if item and item.name]
+    if not valid_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucun fichier fourni pour la session d'upload."
+        )
+
+    requested_target_name = (req.target_vm_name or "").strip() or vm_name
+    session_id = uuid4().hex
+    session_dir = _upload_session_dir(session_id)
+    files_dir = session_dir / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = {
+        "session_id": session_id,
+        "vm_name": vm_name,
+        "target_vm_name": requested_target_name,
+        "source_disk_format": (req.source_disk_format or "auto").strip().lower() or "auto",
+        "files": [
+            {
+                "name": _sanitize_filename(item.name),
+                "size": int(item.size),
+            }
+            for item in valid_files
+        ],
+    }
+    _write_upload_session(session_id, manifest)
+
+    return {
+        "session_id": session_id,
+        "vm_name": vm_name,
+        "target_vm_name": requested_target_name,
+        "files": manifest["files"],
+        "message": "Upload session created. You can now stream bundle files in chunks."
+    }
+
+
+@app.post("/api/v1/migration/upload-session/{session_id}/chunk")
+async def upload_prepare_chunk(
+    session_id: str,
+    request: Request,
+    filename: str = Query(...),
+    offset: int = Query(..., ge=0),
+    total_size: int = Query(..., ge=0),
+    _: None = Depends(_require_auth)
+):
+    """Append one binary chunk into an existing upload session."""
+    manifest = _read_upload_session(session_id)
+    safe_name = _sanitize_filename(filename)
+    file_meta = next((item for item in manifest.get("files", []) if item.get("name") == safe_name), None)
+    if file_meta is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File '{safe_name}' is not registered in upload session '{session_id}'."
+        )
+
+    expected_size = int(file_meta.get("size", 0))
+    if expected_size != int(total_size):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Size mismatch for '{safe_name}'. Expected {expected_size} bytes, got {total_size}."
+        )
+
+    chunk = await request.body()
+    session_dir = _upload_session_dir(session_id)
+    files_dir = session_dir / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    target_path = files_dir / safe_name
+    current_size = target_path.stat().st_size if target_path.exists() else 0
+    if current_size != offset:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Offset mismatch for '{safe_name}'. Expected {current_size}, got {offset}."
+        )
+
+    with target_path.open("ab") as buffer:
+        buffer.write(chunk)
+
+    final_size = target_path.stat().st_size
+    if final_size > expected_size:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Uploaded file '{safe_name}' exceeded expected size {expected_size} bytes."
+        )
+
+    return {
+        "session_id": session_id,
+        "filename": safe_name,
+        "received_bytes": final_size,
+        "expected_bytes": expected_size,
+        "complete": final_size == expected_size,
+    }
+
+
+@app.post("/api/v1/migration/upload-session/{session_id}/complete")
+async def complete_prepare_upload_session(
+    session_id: str,
+    _: None = Depends(_require_auth)
+):
+    """Finalize a chunked bastion upload and return the prepared disk path."""
+    manifest = _read_upload_session(session_id)
+    session_dir = _upload_session_dir(session_id)
+    files_dir = session_dir / "files"
+    target_vm_name = manifest.get("target_vm_name") or manifest.get("vm_name") or "vm"
+    expected_files = manifest.get("files", [])
+
+    missing_or_incomplete: List[str] = []
+    saved_names: List[str] = []
+    for item in expected_files:
+        safe_name = _sanitize_filename(item.get("name", ""))
+        target_path = files_dir / safe_name
+        expected_size = int(item.get("size", 0))
+        if not target_path.exists() or target_path.stat().st_size != expected_size:
+            missing_or_incomplete.append(safe_name)
+            continue
+        saved_names.append(safe_name)
+
+    if missing_or_incomplete:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload incomplete. Missing or partial files: " + ", ".join(missing_or_incomplete)
+        )
+
+    final_dir = Path(config.DATA_DIR) / "uploads" / f"{target_vm_name}-{uuid4().hex[:8]}"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    for name in saved_names:
+        shutil.move(str(files_dir / name), str(final_dir / name))
+
+    bundle = _build_uploaded_bundle_summary(final_dir, saved_names, target_vm_name)
+    requested_format = (manifest.get("source_disk_format") or "").strip().lower()
+    detected_format = bundle["detected_format"]
+    effective_format = detected_format if requested_format in {"", "auto"} else requested_format
+
+    shutil.rmtree(session_dir, ignore_errors=True)
+
+    return {
+        "vm_name": bundle.get("vm_name", manifest.get("vm_name") or target_vm_name),
+        "target_vm_name": target_vm_name,
+        "source_disk_path": bundle["primary_disk_path"],
+        "source_disk_format": effective_format,
+        "bundle": bundle,
+        "message": "Chunked upload completed on bastion. You can now run the real migration using the prepared disk path."
     }
 
 
