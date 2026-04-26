@@ -199,11 +199,12 @@ def resolve_upload_size(image_path: str, requested_size: str) -> str:
 
     # CDI uploads to filesystem PVCs need headroom beyond the virtual disk size.
     required_bytes = math.ceil(base_size / (1 - PVC_FILESYSTEM_OVERHEAD_RATIO))
-    _parse_size_to_bytes(requested_size)
+    requested_bytes = _parse_size_to_bytes(requested_size)
 
-    # Keep the PVC as small as safely possible; a larger user request can be
-    # handled later by storage expansion without risking an avoidable Pending PVC.
-    return _bytes_to_gib_ceil(required_bytes)
+    # Honor the user's request when it is larger than the minimum safe size.
+    # This keeps the UI/backend contract predictable while still preventing
+    # undersized PVCs that would fail CDI imports.
+    return _bytes_to_gib_ceil(max(required_bytes, requested_bytes))
 
 
 def ensure_upload_pvc(namespace: str, pvc_name: str, size: str) -> None:

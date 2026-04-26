@@ -1183,6 +1183,7 @@ async def migrate_to_openshift(
         "namespace": namespace,
         "source_disk_path": resolved_source_disk_path,
         "source_disk_format": resolved_source_disk_format,
+        "pvc_size": req.pvc_size,
         "import_mode": import_mode,
         "vm_console_url": build_vm_console_url(req.target_vm_name, namespace)
     }
@@ -1208,6 +1209,7 @@ async def migrate_to_openshift(
         namespace,
         source_disk_path=resolved_source_disk_path,
         source_disk_format=resolved_source_disk_format,
+        pvc_size=req.pvc_size,
         import_mode=import_mode
     )
 
@@ -1271,6 +1273,7 @@ async def migrate_uploaded_disk_to_openshift(
         "namespace": effective_namespace,
         "source_disk_path": stored_path,
         "source_disk_format": effective_format,
+        "pvc_size": pvc_size,
         "import_mode": effective_import_mode,
         "uploaded_files": bundle["uploaded_files"],
         "bundle": bundle,
@@ -1286,6 +1289,7 @@ async def migrate_uploaded_disk_to_openshift(
         effective_namespace,
         source_disk_path=stored_path,
         source_disk_format=effective_format,
+        pvc_size=pvc_size,
         import_mode=effective_import_mode,
         uploaded_files=bundle["uploaded_files"],
         bundle=bundle
