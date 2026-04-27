@@ -4,6 +4,7 @@ import Button from './Button'
 
 const STATE_KEY = 'migration-control-room-state'
 const LOGS_KEY = 'migration-control-room-logs'
+const CLEAR_EVENT = 'migration-activity-cleared'
 
 const readJson = (key, fallback) => {
   if (typeof window === 'undefined') return fallback
@@ -71,6 +72,7 @@ const MigrationActivityPanel = () => {
   const clearState = () => {
     window.sessionStorage.removeItem(STATE_KEY)
     window.sessionStorage.removeItem(LOGS_KEY)
+    window.dispatchEvent(new CustomEvent(CLEAR_EVENT))
     setState(null)
     setLogs([])
   }

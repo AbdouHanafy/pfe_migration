@@ -17,6 +17,10 @@ export const useLogger = (storageKey = '') => {
     setLogs((prev) => [`[${nowIso()}] ${msg}`, ...prev].slice(0, 200))
   }, [])
 
+  const clearLogs = useCallback(() => {
+    setLogs([])
+  }, [])
+
   useEffect(() => {
     if (!storageKey || typeof window === 'undefined') return
     try {
@@ -26,5 +30,5 @@ export const useLogger = (storageKey = '') => {
     }
   }, [logs, storageKey])
 
-  return { logs, pushLog }
+  return { logs, pushLog, clearLogs }
 }

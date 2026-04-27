@@ -82,6 +82,52 @@ const buildLocalAgentPlan = (details, source) => {
   }
 }
 
+const buildPreparedBundlePlan = ({
+  vmName,
+  sourceDiskPath,
+  sourceDiskFormat,
+  uploadedFiles = [],
+}) => {
+  const diskPath = sourceDiskPath || uploadedFiles[0] || ''
+  const details = {
+    name: vmName || 'vmware-local',
+    uuid: '',
+    state: 'uploaded-bastion',
+    hypervisor: 'vmware-workstation',
+    specs: {
+      memory_mb: 2048,
+      cpus: 2,
+      os_type: 'unknown',
+      os_arch: 'x86_64',
+      guestOS: 'unknown',
+    },
+    disks: diskPath ? [{
+      type: 'file',
+      device: 'disk',
+      path: diskPath,
+      format: (sourceDiskFormat || 'vmdk').toLowerCase(),
+      bus: 'scsi',
+      driver: 'vmware',
+      size_bytes: 0,
+    }] : [],
+    network: [],
+    selected_files: uploadedFiles.map((name) => ({ name, size_bytes: 0 })),
+  }
+
+  const analysis = analyzeVmDetails(details)
+  const conversionPlan = buildConversionPlan(details, analysis)
+  const strategy = chooseLocalStrategy(analysis, conversionPlan)
+
+  return {
+    vm_name: details.name,
+    source: 'local-browser-vmware',
+    details,
+    analysis,
+    conversion_plan: conversionPlan,
+    strategy,
+  }
+}
+
 const buildMigrationGate = (planData, vmName) => {
   if (!vmName) {
     return { ready: false, tone: 'neutral', message: 'Select or enter a VM name first.' }
@@ -150,6 +196,7 @@ const estimateMigrationTime = (importMode, hasLocalFiles) => {
 
 const STORAGE_KEY = 'migration-control-room-state'
 const LOG_STORAGE_KEY = 'migration-control-room-logs'
+const CLEAR_EVENT = 'migration-activity-cleared'
 
 const HomePage = () => {
   const [apiBase, setApiBase] = useState(
@@ -200,7 +247,7 @@ const HomePage = () => {
 
   const { token } = useAuth()
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
-  const { logs, pushLog } = useLogger(LOG_STORAGE_KEY)
+  const { logs, pushLog, clearLogs } = useLogger(LOG_STORAGE_KEY)
   const migrationGate = useMemo(() => buildMigrationGate(analysis, vmName), [analysis, vmName])
   const trimmedSourceDiskPath = sourceDiskPath.trim()
   const localAgentSourceSelected = isLocalAgentSource(vmSource)
@@ -312,6 +359,24 @@ const HomePage = () => {
     }
   }, [inferredKvmDisk, vmSource, trimmedSourceDiskPath, sourceDiskFormat, targetVmName, vmName])
 
+  useEffect(() => {
+    const clearActivity = () => {
+      setMigration(null)
+      setJobId('')
+      setOpenShiftResult(null)
+      setError(null)
+      setMigrationNotice('')
+      setPrepareProgress(null)
+      setPreparedBundle(null)
+      setLocalAgentPreparation(null)
+      clearLogs()
+      lastNotifiedStatusRef.current = ''
+    }
+
+    window.addEventListener(CLEAR_EVENT, clearActivity)
+    return () => window.removeEventListener(CLEAR_EVENT, clearActivity)
+  }, [clearLogs])
+
   const setActionLoading = (key, value) => {
     setLoading((prev) => ({ ...prev, [key]: value }))
   }
@@ -368,6 +433,15 @@ const HomePage = () => {
         }
       } catch (err) {
         const msg = err.message || 'Unknown error'
+        if (msg.includes('404') && msg.includes('non trouvé')) {
+          setMigration(null)
+          setJobId('')
+          setOpenShiftResult(null)
+          setError(null)
+          setMigrationNotice('Previous backend job was cleared after a backend restart. Start a fresh migration to continue.')
+          pushLog('Previous job no longer exists on backend. Cleared stale job tracking automatically.')
+          return
+        }
         setError(`Auto status refresh: ${msg}`)
         pushLog(`Auto status refresh failed: ${msg}`)
       }
@@ -472,6 +546,44 @@ const HomePage = () => {
       }
       return
     }
+    if (vmSource === 'local-browser-vmware') {
+      setError(null)
+      setActionLoading('analyze', true)
+      try {
+        let data
+        if (diskFiles.length > 0) {
+          const localResult = await analyzeLocalVmwareBundle(diskFiles, vmName)
+          data = {
+            vm_name: localResult.vm_name,
+            source: localResult.source,
+            details: localResult.details,
+            analysis: localResult.analysis,
+            conversion_plan: localResult.conversion_plan,
+            strategy: localResult.strategy,
+          }
+          setVmName(localResult.vm_name || vmName)
+        } else {
+          const preparedPath = trimmedSourceDiskPath || preparedBundle?.source_disk_path || ''
+          if (!preparedPath) {
+            throw new Error('Select local VM files or prepare/upload a disk to bastion first.')
+          }
+          data = buildPreparedBundlePlan({
+            vmName,
+            sourceDiskPath: preparedPath,
+            sourceDiskFormat: sourceDiskFormat || preparedBundle?.source_disk_format || preparedBundle?.bundle?.detected_format || 'vmdk',
+            uploadedFiles: preparedBundle?.bundle?.uploaded_files || [],
+          })
+        }
+        setAnalysis(data)
+        setVmSource('local-browser-vmware')
+        pushLog(`Analysis done for ${vmName} (local browser VMware mode)`)
+      } catch (err) {
+        handleError('Analysis', err)
+      } finally {
+        setActionLoading('analyze', false)
+      }
+      return
+    }
     if (diskFiles.length === 0 && trimmedSourceDiskPath && vmSource === 'kvm') {
       setError('Analysis: use local VM files for Analyze/Plan, or keep the previous plan. Bastion Disk Path is used for migration, not KVM discovery.')
       return pushLog('Analyze blocked: bastion path is for migration. Use local VM files for Analyze/Plan.')
@@ -518,6 +630,36 @@ const HomePage = () => {
         if (primaryDisk?.format) setSourceDiskFormat(primaryDisk.format)
         if (!targetVmName) setTargetVmName(details?.name || vmName)
         pushLog(`Local agent plan generated for ${vmName}`)
+      } catch (err) {
+        handleError('Plan', err)
+      } finally {
+        setActionLoading('plan', false)
+      }
+      return
+    }
+    if (vmSource === 'local-browser-vmware') {
+      setError(null)
+      setActionLoading('plan', true)
+      try {
+        let data
+        if (diskFiles.length > 0) {
+          data = await analyzeLocalVmwareBundle(diskFiles, vmName)
+          setVmName(data.vm_name || vmName)
+        } else {
+          const preparedPath = trimmedSourceDiskPath || preparedBundle?.source_disk_path || ''
+          if (!preparedPath) {
+            throw new Error('Select local VM files or prepare/upload a disk to bastion first.')
+          }
+          data = buildPreparedBundlePlan({
+            vmName,
+            sourceDiskPath: preparedPath,
+            sourceDiskFormat: sourceDiskFormat || preparedBundle?.source_disk_format || preparedBundle?.bundle?.detected_format || 'vmdk',
+            uploadedFiles: preparedBundle?.bundle?.uploaded_files || [],
+          })
+        }
+        setAnalysis(data)
+        setVmSource('local-browser-vmware')
+        pushLog(`Plan generated for ${vmName} (local browser VMware mode)`)
       } catch (err) {
         handleError('Plan', err)
       } finally {
@@ -730,6 +872,7 @@ const HomePage = () => {
       })
 
       setPreparedBundle(data)
+      setVmSource('local-browser-vmware')
       setSourceDiskPath(data.source_disk_path || '')
       setSourceDiskFormat(data.source_disk_format || sourceDiskFormat)
       setTargetVmName(data.target_vm_name || targetVmName || vmName)
@@ -779,6 +922,7 @@ const HomePage = () => {
       })
 
       setPreparedBundle(bastionData)
+      setVmSource(`local-agent-${source}`)
       setSourceDiskPath(bastionData?.source_disk_path || '')
       setSourceDiskFormat(bastionData?.source_disk_format || localData?.primary_disk?.format || sourceDiskFormat || 'raw')
       setTargetVmName((current) => bastionData?.target_vm_name || current || localData?.vm_name || vmName)
