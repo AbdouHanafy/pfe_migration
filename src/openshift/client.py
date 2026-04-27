@@ -186,6 +186,26 @@ def list_virtual_machines(namespace: str) -> list[Dict]:
     return results
 
 
+def set_virtual_machine_run_strategy(namespace: str, vm_name: str, run_strategy: str) -> None:
+    payload = json.dumps({"spec": {"runStrategy": run_strategy}})
+    code, out, err = _run([
+        "oc",
+        "patch",
+        "vm",
+        vm_name,
+        "-n",
+        namespace,
+        "--type",
+        "merge",
+        "-p",
+        payload,
+    ])
+    if code != 0:
+        raise RuntimeError(
+            f"Unable to set VM '{vm_name}' runStrategy to '{run_strategy}' in namespace '{namespace}': {err or out}"
+        )
+
+
 def build_vm_console_url(vm_name: str, namespace: str) -> str:
     base_url = (config.OPENSHIFT_CONSOLE_URL or "").strip().rstrip("/")
     if not base_url:

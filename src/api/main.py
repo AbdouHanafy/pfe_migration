@@ -36,6 +36,7 @@ from src.openshift import (
     check_tools,
     ensure_namespace,
     list_virtual_machines,
+    set_virtual_machine_run_strategy,
     build_vm_console_url,
     convert_disk_if_needed,
     normalize_disk_for_http_import,
@@ -1352,6 +1353,48 @@ async def list_openshift_vms(
         return {
             "namespace": effective_namespace,
             "items": list_virtual_machines(effective_namespace),
+        }
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc)
+        ) from exc
+
+
+@app.post("/api/v1/openshift/vms/{vm_name}/start")
+async def start_openshift_vm(
+    vm_name: str,
+    namespace: str = Query(default=""),
+    _: None = Depends(_require_auth)
+):
+    effective_namespace = (namespace or config.OPENSHIFT_NAMESPACE).strip() or config.OPENSHIFT_NAMESPACE
+    try:
+        set_virtual_machine_run_strategy(effective_namespace, vm_name, "Always")
+        return {
+            "vm_name": vm_name,
+            "namespace": effective_namespace,
+            "message": f"VM '{vm_name}' start requested.",
+        }
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc)
+        ) from exc
+
+
+@app.post("/api/v1/openshift/vms/{vm_name}/stop")
+async def stop_openshift_vm(
+    vm_name: str,
+    namespace: str = Query(default=""),
+    _: None = Depends(_require_auth)
+):
+    effective_namespace = (namespace or config.OPENSHIFT_NAMESPACE).strip() or config.OPENSHIFT_NAMESPACE
+    try:
+        set_virtual_machine_run_strategy(effective_namespace, vm_name, "Halted")
+        return {
+            "vm_name": vm_name,
+            "namespace": effective_namespace,
+            "message": f"VM '{vm_name}' stop requested.",
         }
     except RuntimeError as exc:
         raise HTTPException(

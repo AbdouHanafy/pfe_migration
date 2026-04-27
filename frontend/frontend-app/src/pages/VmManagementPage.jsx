@@ -20,6 +20,7 @@ const VmManagementPage = () => {
   const [discoveredVms, setDiscoveredVms] = useState([])
   const [openshiftVms, setOpenshiftVms] = useState([])
   const [loading, setLoading] = useState(false)
+  const [actionLoading, setActionLoading] = useState({})
   const [error, setError] = useState('')
 
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
@@ -46,6 +47,22 @@ const VmManagementPage = () => {
       setError(err.message || 'Failed to discover VMs')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const controlVm = async (vmName, action) => {
+    const actionKey = `${action}-${vmName}`
+    setError('')
+    setActionLoading((current) => ({ ...current, [actionKey]: true }))
+    try {
+      await api.fetchJson(`/api/v1/openshift/vms/${encodeURIComponent(vmName)}/${action}?namespace=${encodeURIComponent(namespace || 'vm-migration')}`, {
+        method: 'POST',
+      })
+      await refresh()
+    } catch (err) {
+      setError(err.message || `Failed to ${action} VM`)
+    } finally {
+      setActionLoading((current) => ({ ...current, [actionKey]: false }))
     }
   }
 
@@ -96,6 +113,22 @@ const VmManagementPage = () => {
                       Open in console
                     </a>
                   ) : null}
+                </div>
+                <div className="row">
+                  <Button
+                    variant="ghost"
+                    onClick={() => controlVm(vm.name, 'start')}
+                    disabled={loading || actionLoading[`start-${vm.name}`] || vm.status === 'Running'}
+                  >
+                    {actionLoading[`start-${vm.name}`] ? 'Starting...' : 'Start'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => controlVm(vm.name, 'stop')}
+                    disabled={loading || actionLoading[`stop-${vm.name}`] || vm.status !== 'Running'}
+                  >
+                    {actionLoading[`stop-${vm.name}`] ? 'Stopping...' : 'Stop'}
+                  </Button>
                 </div>
               </div>
             ))}
