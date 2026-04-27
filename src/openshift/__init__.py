@@ -1,6 +1,7 @@
 from .client import (
     check_tools,
     ensure_namespace,
+    list_virtual_machines,
     build_vm_console_url,
     convert_disk_if_needed,
     normalize_disk_for_http_import,
@@ -15,6 +16,7 @@ from .client import (
 __all__ = [
     "check_tools",
     "ensure_namespace",
+    "list_virtual_machines",
     "build_vm_console_url",
     "convert_disk_if_needed",
     "normalize_disk_for_http_import",

@@ -16,7 +16,9 @@ const normalizeSource = (vm, source) => ({
 const VmManagementPage = () => {
   const { token } = useAuth()
   const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000')
-  const [vms, setVms] = useState([])
+  const [namespace, setNamespace] = useState('vm-migration')
+  const [discoveredVms, setDiscoveredVms] = useState([])
+  const [openshiftVms, setOpenshiftVms] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -32,11 +34,14 @@ const VmManagementPage = () => {
         api.fetchJson('/api/v1/discovery/vmware-esxi').catch(() => []),
       ])
 
-      setVms([
+      setDiscoveredVms([
         ...kvm.map((vm) => normalizeSource(vm, 'kvm')),
         ...ws.map((vm) => normalizeSource(vm, 'vmware-workstation')),
         ...esxi.map((vm) => normalizeSource(vm, 'vmware-esxi')),
       ])
+
+      const openshift = await api.fetchJson(`/api/v1/openshift/vms?namespace=${encodeURIComponent(namespace || 'vm-migration')}`).catch(() => ({ items: [] }))
+      setOpenshiftVms(Array.isArray(openshift.items) ? openshift.items : [])
     } catch (err) {
       setError(err.message || 'Failed to discover VMs')
     } finally {
@@ -49,17 +54,18 @@ const VmManagementPage = () => {
       <header className="page-header">
         <div>
           <h1>VM Management</h1>
-          <p>Live discovery view across KVM, VMware Workstation, and VMware ESXi.</p>
+          <p>Source discovery plus OpenShift Virtualization VMs in your target namespace.</p>
         </div>
       </header>
 
       <section className="grid">
         <Card
           className="wide"
-          title="Discovered VMs"
+          title="OpenShift VMs"
           actions={(
             <>
               <Input value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="http://10.9.21.90:8000" />
+              <Input value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder="vm-migration" />
               <Button onClick={refresh} disabled={loading}>
                 {loading ? 'Refreshing...' : 'Refresh'}
               </Button>
@@ -68,8 +74,49 @@ const VmManagementPage = () => {
         >
           {error ? <p className="error">{error}</p> : null}
           <div className="list vm-list">
-            {vms.length === 0 ? <p className="empty">No VMs discovered yet.</p> : null}
-            {vms.map((vm) => (
+            {openshiftVms.length === 0 ? <p className="empty">No OpenShift VMs found in this namespace yet.</p> : null}
+            {openshiftVms.map((vm) => (
+              <div key={`openshift-${vm.namespace}-${vm.name}`} className="item item-stack">
+                <div className="row-between">
+                  <div>
+                    <strong>{vm.name}</strong>
+                    <p className="micro">{vm.namespace}</p>
+                  </div>
+                  <span className="pill">{vm.status || 'Unknown'}</span>
+                </div>
+                <div className="row">
+                  <span className="micro">CPU: {vm.cpu_cores || 0}</span>
+                  <span className="micro">RAM: {vm.memory || 'n/a'}</span>
+                  <span className="micro">Disks: {vm.disks_count || 0}</span>
+                </div>
+                <div className="row-between">
+                  <span className="micro">Ready: {vm.ready ? 'Yes' : 'No'}</span>
+                  {vm.console_url ? (
+                    <a href={vm.console_url} target="_blank" rel="noreferrer" className="micro">
+                      Open in console
+                    </a>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card
+          className="wide"
+          title="Discovered VMs"
+          actions={(
+            <>
+              <Button onClick={refresh} disabled={loading}>
+                {loading ? 'Refreshing...' : 'Refresh'}
+              </Button>
+            </>
+          )}
+        >
+          {error ? <p className="error">{error}</p> : null}
+          <div className="list vm-list">
+            {discoveredVms.length === 0 ? <p className="empty">No VMs discovered yet.</p> : null}
+            {discoveredVms.map((vm) => (
               <div key={`${vm.source}-${vm.uuid || vm.name}`} className="item item-stack">
                 <div className="row-between">
                   <div>

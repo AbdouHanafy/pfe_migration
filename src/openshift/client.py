@@ -144,6 +144,48 @@ def ensure_namespace(namespace: str) -> None:
         raise RuntimeError(f"Unable to create namespace: {err or out}")
 
 
+def list_virtual_machines(namespace: str) -> list[Dict]:
+    code, out, err = _run(["oc", "get", "vm", "-n", namespace, "-o", "json"])
+    if code != 0:
+        raise RuntimeError(f"Unable to list virtual machines in namespace '{namespace}': {err or out}")
+
+    try:
+        payload = json.loads(out or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid VM list output for namespace '{namespace}': {exc}") from exc
+
+    items = payload.get("items", [])
+    results: list[Dict] = []
+    for item in items:
+        metadata = item.get("metadata", {})
+        spec = item.get("spec", {})
+        status = item.get("status", {})
+        printable_status = status.get("printableStatus") or "Unknown"
+        cpu_cores = spec.get("template", {}).get("spec", {}).get("domain", {}).get("cpu", {}).get("cores") or 0
+        memory = (
+            spec.get("template", {})
+            .get("spec", {})
+            .get("domain", {})
+            .get("resources", {})
+            .get("requests", {})
+            .get("memory", "")
+        )
+        volumes = spec.get("template", {}).get("spec", {}).get("volumes", []) or []
+        results.append({
+            "name": metadata.get("name", ""),
+            "namespace": metadata.get("namespace", namespace),
+            "created_at": metadata.get("creationTimestamp", ""),
+            "status": printable_status,
+            "ready": bool(status.get("ready")),
+            "cpu_cores": cpu_cores,
+            "memory": memory,
+            "disks_count": len(volumes),
+            "run_strategy": spec.get("runStrategy", ""),
+            "console_url": build_vm_console_url(metadata.get("name", ""), metadata.get("namespace", namespace)),
+        })
+    return results
+
+
 def build_vm_console_url(vm_name: str, namespace: str) -> str:
     base_url = (config.OPENSHIFT_CONSOLE_URL or "").strip().rstrip("/")
     if not base_url:

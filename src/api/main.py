@@ -35,6 +35,7 @@ from src.monitoring import job_store, build_report
 from src.openshift import (
     check_tools,
     ensure_namespace,
+    list_virtual_machines,
     build_vm_console_url,
     convert_disk_if_needed,
     normalize_disk_for_http_import,
@@ -1338,6 +1339,25 @@ async def list_migration_jobs(_: None = Depends(_require_auth)):
         }
         for job in jobs
     ]
+
+
+@app.get("/api/v1/openshift/vms")
+async def list_openshift_vms(
+    namespace: str = Query(default=""),
+    _: None = Depends(_require_auth)
+):
+    """List migrated OpenShift Virtualization VMs in a namespace."""
+    effective_namespace = (namespace or config.OPENSHIFT_NAMESPACE).strip() or config.OPENSHIFT_NAMESPACE
+    try:
+        return {
+            "namespace": effective_namespace,
+            "items": list_virtual_machines(effective_namespace),
+        }
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc)
+        ) from exc
 
 @app.get("/api/v1/migration/report/{job_id}")
 async def get_migration_report(job_id: str, _: None = Depends(_require_auth)):
