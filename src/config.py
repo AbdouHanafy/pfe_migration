@@ -86,6 +86,7 @@ class Config:
 
     # OpenShift / KubeVirt
     OPENSHIFT_NAMESPACE = os.getenv("OPENSHIFT_NAMESPACE", "vm-migration")
+    OPENSHIFT_STORAGE_CLASS = os.getenv("OPENSHIFT_STORAGE_CLASS", "hostpath-csi-immediate")
     OPENSHIFT_CONSOLE_URL = os.getenv("OPENSHIFT_CONSOLE_URL", "")
     OPENSHIFT_IMPORT_BASE_URL = os.getenv("OPENSHIFT_IMPORT_BASE_URL", "")
     OPENSHIFT_UPLOADPROXY_URL = os.getenv("OPENSHIFT_UPLOADPROXY_URL", "")

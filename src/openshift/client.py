@@ -254,7 +254,7 @@ def ensure_upload_pvc(namespace: str, pvc_name: str, size: str) -> None:
             "spec": {
                 "accessModes": ["ReadWriteOnce"],
                 "resources": {"requests": {"storage": size}},
-                "storageClassName": "hostpath-csi",
+                "storageClassName": config.OPENSHIFT_STORAGE_CLASS,
                 "volumeMode": "Filesystem",
             },
         }
@@ -389,7 +389,7 @@ def create_data_volume_http(image_path: str, dv_name: str, size: str, namespace:
                         "storage": effective_size
                     }
                 },
-                "storageClassName": "hostpath-csi",
+                "storageClassName": config.OPENSHIFT_STORAGE_CLASS,
                 "volumeMode": "Filesystem",
             }
         }
