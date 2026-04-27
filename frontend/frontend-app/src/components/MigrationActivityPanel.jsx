@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from './Button'
+import { LOGS_CLEAR_EVENT } from '../hooks/useLogger'
 
 const STATE_KEY = 'migration-control-room-state'
 const LOGS_KEY = 'migration-control-room-logs'
 const CLEAR_EVENT = 'migration-activity-cleared'
+const PANEL_HIDDEN_KEY = 'migration-activity-panel-hidden'
 
 const readJson = (key, fallback) => {
   if (typeof window === 'undefined') return fallback
@@ -41,6 +43,7 @@ const MigrationActivityPanel = () => {
   const navigate = useNavigate()
   const [state, setState] = useState(() => readJson(STATE_KEY, null))
   const [logs, setLogs] = useState(() => readJson(LOGS_KEY, []))
+  const [collapsed, setCollapsed] = useState(() => readJson(PANEL_HIDDEN_KEY, false))
 
   useEffect(() => {
     const refresh = () => {
@@ -51,6 +54,15 @@ const MigrationActivityPanel = () => {
     const timer = window.setInterval(refresh, 1000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.sessionStorage.setItem(PANEL_HIDDEN_KEY, JSON.stringify(collapsed))
+    } catch {
+      // Ignore persistence issues.
+    }
+  }, [collapsed])
 
   const hasContent = useMemo(() => {
     return Boolean(
@@ -77,6 +89,12 @@ const MigrationActivityPanel = () => {
     setLogs([])
   }
 
+  const clearOnlyLogs = () => {
+    window.sessionStorage.removeItem(LOGS_KEY)
+    window.dispatchEvent(new CustomEvent(LOGS_CLEAR_EVENT))
+    setLogs([])
+  }
+
   return (
     <aside className="migration-activity-panel">
       <div className="migration-activity-head">
@@ -86,9 +104,29 @@ const MigrationActivityPanel = () => {
             {state?.jobId ? `Job ${state.jobId}` : 'Unsaved migration context'}
           </div>
         </div>
-        <Button variant="ghost" className="activity-mini-btn" onClick={clearState}>Delete</Button>
+        <div className="migration-activity-head-actions">
+          <Button
+            variant="ghost"
+            className="activity-icon-btn"
+            onClick={() => setCollapsed((value) => !value)}
+            title={collapsed ? 'Show panel' : 'Hide panel'}
+          >
+            {collapsed ? '[+]' : '[-]'}
+          </Button>
+          <Button
+            variant="ghost"
+            className="activity-icon-btn"
+            onClick={clearOnlyLogs}
+            title="Clear logs"
+          >
+            [x]
+          </Button>
+          <Button variant="ghost" className="activity-mini-btn" onClick={clearState}>Delete</Button>
+        </div>
       </div>
 
+      {collapsed ? null : (
+        <>
       {progress != null ? (
         <>
           <div className="migration-activity-progress-head">
@@ -121,6 +159,8 @@ const MigrationActivityPanel = () => {
         <Button variant="ghost" className="activity-mini-btn" onClick={() => navigate('/migrations/new')}>Open</Button>
         <Button variant="ghost" className="activity-mini-btn" onClick={() => navigate('/migrations/progress')}>Progress</Button>
       </div>
+        </>
+      )}
     </aside>
   )
 }
