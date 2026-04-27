@@ -383,12 +383,14 @@ def create_data_volume_http(image_path: str, dv_name: str, size: str, namespace:
                 }
             },
             "storage": {
+                "accessModes": ["ReadWriteOnce"],
                 "resources": {
                     "requests": {
                         "storage": effective_size
                     }
                 },
-                "storageClassName": "hostpath-csi"
+                "storageClassName": "hostpath-csi",
+                "volumeMode": "Filesystem",
             }
         }
     }
