@@ -202,7 +202,9 @@ const HomePage = () => {
   const [apiBase, setApiBase] = useState(
     import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000'
   )
-  const [localAgentBase, setLocalAgentBase] = useState(import.meta.env.VITE_LOCAL_AGENT_BASE_URL || 'http://127.0.0.1:8010')
+  const defaultLocalAgentBase = import.meta.env.VITE_LOCAL_AGENT_BASE_URL || 'http://127.0.0.1:8010'
+  const [localAgentBrowserBase, setLocalAgentBrowserBase] = useState(defaultLocalAgentBase)
+  const [localAgentBastionBase, setLocalAgentBastionBase] = useState(import.meta.env.VITE_BASTION_AGENT_BASE_URL || defaultLocalAgentBase)
   const [localAgentToken, setLocalAgentToken] = useState(import.meta.env.VITE_LOCAL_AGENT_TOKEN || '')
   const [localAgentHealth, setLocalAgentHealth] = useState(null)
   const [vms, setVms] = useState([])
@@ -265,7 +267,10 @@ const HomePage = () => {
       const raw = window.sessionStorage.getItem(STORAGE_KEY)
       if (!raw) return
       const saved = JSON.parse(raw)
-      if (saved.localAgentBase) setLocalAgentBase(saved.localAgentBase)
+      if (saved.localAgentBrowserBase) setLocalAgentBrowserBase(saved.localAgentBrowserBase)
+      if (saved.localAgentBastionBase) setLocalAgentBastionBase(saved.localAgentBastionBase)
+      if (!saved.localAgentBrowserBase && saved.localAgentBase) setLocalAgentBrowserBase(saved.localAgentBase)
+      if (!saved.localAgentBastionBase && saved.localAgentBase) setLocalAgentBastionBase(saved.localAgentBase)
       if (saved.localAgentToken) setLocalAgentToken(saved.localAgentToken)
       if (saved.vmName) setVmName(saved.vmName)
       if (saved.vmSource) setVmSource(saved.vmSource)
@@ -297,7 +302,8 @@ const HomePage = () => {
       window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
         vmName,
         vmSource,
-        localAgentBase,
+        localAgentBrowserBase,
+        localAgentBastionBase,
         localAgentToken,
         analysis,
         migration,
@@ -324,7 +330,8 @@ const HomePage = () => {
   }, [
     vmName,
     vmSource,
-    localAgentBase,
+    localAgentBrowserBase,
+    localAgentBastionBase,
     localAgentToken,
     analysis,
     migration,
@@ -386,7 +393,7 @@ const HomePage = () => {
     if (localAgentToken) {
       headers['X-Agent-Token'] = localAgentToken
     }
-    const base = (localAgentBase || '').replace(/\/$/, '')
+    const base = (localAgentBrowserBase || '').replace(/\/$/, '')
     const response = await fetch(`${base}${path}`, { ...options, headers })
     if (!response.ok) {
       const text = await response.text()
@@ -913,7 +920,7 @@ const HomePage = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          local_agent_base_url: localAgentBase,
+          local_agent_base_url: localAgentBastionBase || localAgentBrowserBase,
           local_source: source,
           local_agent_token: localAgentToken,
           target_vm_name: targetVmName || localData?.vm_name || vmName,
@@ -1079,14 +1086,21 @@ const HomePage = () => {
         >
           <FieldGrid>
             <label className="field">
-              <span className="field-label">Agent URL</span>
-              <Input value={localAgentBase} onChange={(e) => setLocalAgentBase(e.target.value)} placeholder="http://127.0.0.1:8010" />
+              <span className="field-label">Browser Agent URL</span>
+              <Input value={localAgentBrowserBase} onChange={(e) => setLocalAgentBrowserBase(e.target.value)} placeholder="http://172.20.148.191:8010" />
+            </label>
+            <label className="field">
+              <span className="field-label">Bastion Agent URL</span>
+              <Input value={localAgentBastionBase} onChange={(e) => setLocalAgentBastionBase(e.target.value)} placeholder="http://127.0.0.1:8011" />
             </label>
             <label className="field">
               <span className="field-label">Agent Token</span>
               <Input value={localAgentToken} onChange={(e) => setLocalAgentToken(e.target.value)} placeholder="optional agent token" />
             </label>
           </FieldGrid>
+          <p className="hint">
+            Use the browser URL for <strong>Agent Health</strong> and discovery, and the bastion URL for <strong>Prepare Via Agent</strong>.
+          </p>
           <JsonBlock data={localAgentHealth} />
         </Card>
 
