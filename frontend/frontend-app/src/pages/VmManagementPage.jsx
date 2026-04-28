@@ -108,13 +108,16 @@ const VmManagementPage = () => {
                 </div>
                 <div className="row-between">
                   <span className="micro">Ready: {vm.ready ? 'Yes' : 'No'}</span>
-                  {vm.console_url ? (
-                    <a href={vm.console_url} target="_blank" rel="noreferrer" className="micro">
-                      Open in console
-                    </a>
-                  ) : null}
                 </div>
                 <div className="row">
+                  {vm.console_url ? (
+                    <Button
+                      variant="ghost"
+                      onClick={() => window.open(vm.console_url, '_blank', 'noopener,noreferrer')}
+                    >
+                      Console
+                    </Button>
+                  ) : null}
                   <Button
                     variant="ghost"
                     onClick={() => controlVm(vm.name, 'start')}
