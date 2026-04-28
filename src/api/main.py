@@ -754,7 +754,7 @@ def _build_dashboard_overview() -> Dict:
     }
 
 
-@app.get("/api/v1/openshift/imports/{filename}")
+@app.api_route("/api/v1/openshift/imports/{filename}", methods=["GET", "HEAD"])
 async def serve_openshift_import_file(filename: str):
     imports_dir = Path(config.DATA_DIR) / "imports"
     file_path = (imports_dir / Path(filename).name).resolve()

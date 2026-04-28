@@ -240,6 +240,28 @@ def _build_import_target_path(source_path: str) -> str:
     return str(imports_dir / f"{source.stem or 'disk'}-{unique_suffix}.qcow2")
 
 
+def _ensure_http_import_file(source_path: str) -> str:
+    source = Path(source_path).resolve()
+    imports_dir = (Path(config.DATA_DIR) / "imports").resolve()
+    imports_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if source.is_relative_to(imports_dir):
+            return str(source)
+    except Exception:
+        pass
+
+    target_path = imports_dir / source.name
+    if target_path.exists():
+        if target_path.resolve() == source:
+            return str(target_path)
+        unique_suffix = uuid4().hex[:8]
+        target_path = imports_dir / f"{source.stem}-{unique_suffix}{source.suffix}"
+
+    shutil.copy2(source, target_path)
+    return str(target_path)
+
+
 def _qemu_img_info(image_path: str) -> Dict:
     code, out, err = _run(["qemu-img", "info", "--output", "json", image_path])
     if code != 0:
@@ -367,13 +389,7 @@ def convert_disk_if_needed(source_path: str, source_format: str, progress_callba
 def normalize_disk_for_http_import(source_path: str, source_format: str, progress_callback: ProgressCallback | None = None) -> str:
     normalized_format = (source_format or "").lower()
     if normalized_format == "qcow2":
-        source = Path(source_path)
-        data_dir = Path(config.DATA_DIR).resolve()
-        try:
-            if source.resolve().is_relative_to(data_dir):
-                return str(source.resolve())
-        except Exception:
-            pass
+        return _ensure_http_import_file(source_path)
 
     target_path = _build_import_target_path(source_path)
     cmd = [
