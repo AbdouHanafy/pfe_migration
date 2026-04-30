@@ -457,7 +457,10 @@ def build_import_url(image_path: str) -> str:
 
 def delete_datasource_if_exists(namespace: str, dv_name: str) -> None:
     _run(["oc", "delete", "dv", dv_name, "-n", namespace, "--ignore-not-found=true"])
+    _run(["oc", "delete", "pvc", dv_name, "-n", namespace, "--ignore-not-found=true"])
     _run(["oc", "delete", "vm", dv_name, "-n", namespace, "--ignore-not-found=true"])
+    _run(["oc", "delete", "volumeimportsource", "-n", namespace, "--all", "--ignore-not-found=true"])
+    _run(["oc", "delete", "pod", "-n", namespace, "--selector", "app=containerized-data-importer", "--ignore-not-found=true"])
 
 
 def create_data_volume_http(image_path: str, dv_name: str, size: str, namespace: str) -> DataVolumeResult:

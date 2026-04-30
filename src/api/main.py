@@ -41,6 +41,7 @@ from src.openshift import (
     convert_disk_if_needed,
     normalize_disk_for_http_import,
     upload_disk,
+    delete_datasource_if_exists,
     create_data_volume_http,
     wait_for_data_volume,
     build_vm_manifest,
@@ -581,13 +582,47 @@ def _run_openshift_migration_job(job_id: str, req: OpenShiftMigrationRequest, na
         if import_mode != "upload":
             job_store.add_step(job_id, "wait-for-import", "running")
             job_store.add_log(job_id, f"Waiting for DataVolume '{dv_name}' to reach 'Succeeded'.")
-            wait_for_data_volume(
-                namespace=namespace,
-                dv_name=dv_name,
-                progress_callback=progress_logger
-            )
-            job_store.add_log(job_id, f"DataVolume '{dv_name}' import succeeded.")
-            job_store.finish_last_step(job_id, "completed")
+            try:
+                wait_for_data_volume(
+                    namespace=namespace,
+                    dv_name=dv_name,
+                    progress_callback=progress_logger
+                )
+                job_store.add_log(job_id, f"DataVolume '{dv_name}' import succeeded.")
+                job_store.finish_last_step(job_id, "completed")
+            except Exception as exc:
+                failure_text = str(exc)
+                lower_failure = failure_text.lower()
+                retryable_http_failure = (
+                    import_mode == "http"
+                    and (
+                        "unexpected eof" in lower_failure
+                        or "scratch" in lower_failure
+                        or "unable to transfer source data to scratch space" in lower_failure
+                        or "failed to pull image" in lower_failure
+                    )
+                )
+                if not retryable_http_failure:
+                    raise
+
+                job_store.add_log(
+                    job_id,
+                    "HTTP import became unstable during CDI transfer. "
+                    "Cleaning up the DataVolume and retrying automatically with upload mode."
+                )
+                job_store.finish_last_step(job_id, "failed")
+                delete_datasource_if_exists(namespace, dv_name)
+
+                job_store.add_step(job_id, "upload-fallback", "running")
+                job_store.add_log(job_id, f"Uploading image '{image_path}' into PVC '{dv_name}' via uploadproxy fallback.")
+                upload_result = upload_disk(
+                    image_path=image_path,
+                    pvc_name=dv_name,
+                    size=req.pvc_size,
+                    namespace=namespace
+                )
+                job_store.add_log(job_id, f"Upload fallback completed for PVC '{dv_name}'.")
+                job_store.finish_last_step(job_id, "completed")
 
         job_store.add_step(job_id, "apply-manifest", "running")
         job_store.add_log(job_id, f"Creating VirtualMachine '{req.target_vm_name}' using PVC '{upload_result.pvc_name}'.")
