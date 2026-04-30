@@ -135,6 +135,22 @@ def get_uploadproxy_url() -> str:
     return f"https://{out}"
 
 
+def _get_openshift_console_base_url() -> str:
+    if config.OPENSHIFT_CONSOLE_URL:
+        return (config.OPENSHIFT_CONSOLE_URL or "").strip().rstrip("/")
+
+    cmd = [
+        "oc", "get", "route",
+        "-n", "openshift-console",
+        "console",
+        "-o", "jsonpath={.spec.host}"
+    ]
+    code, out, _ = _run(cmd)
+    if code != 0 or not out:
+        return ""
+    return f"https://{out.strip()}"
+
+
 def ensure_namespace(namespace: str) -> None:
     code, _, _ = _run(["oc", "get", "namespace", namespace])
     if code == 0:
@@ -207,7 +223,7 @@ def set_virtual_machine_run_strategy(namespace: str, vm_name: str, run_strategy:
 
 
 def build_vm_console_url(vm_name: str, namespace: str) -> str:
-    base_url = (config.OPENSHIFT_CONSOLE_URL or "").strip().rstrip("/")
+    base_url = _get_openshift_console_base_url()
     if not base_url:
         return ""
     encoded_namespace = quote(namespace, safe="")
