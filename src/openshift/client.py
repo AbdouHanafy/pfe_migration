@@ -75,6 +75,65 @@ def _diagnose_dv_blocker(namespace: str, dv_name: str, payload: Dict) -> str:
     return ""
 
 
+def _get_importer_failure(namespace: str, dv_name: str) -> str:
+    code, out, err = _run(["oc", "get", "pods", "-n", namespace, "-o", "json"])
+    if code != 0 or not out:
+        return ""
+
+    try:
+        payload = json.loads(out)
+    except json.JSONDecodeError:
+        return ""
+
+    for item in payload.get("items", []):
+        metadata = item.get("metadata", {})
+        labels = metadata.get("labels", {}) or {}
+        if labels.get("cdi.kubevirt.io") != "importer":
+            continue
+
+        spec = item.get("spec", {}) or {}
+        volume_claims = {
+            volume.get("persistentVolumeClaim", {}).get("claimName", "")
+            for volume in spec.get("volumes", []) or []
+            if isinstance(volume, dict)
+        }
+        if not any(claim_name and (claim_name == dv_name or claim_name.startswith("prime-")) for claim_name in volume_claims):
+            continue
+
+        status = item.get("status", {}) or {}
+        for container_status in status.get("containerStatuses", []) or []:
+            last_state = (container_status.get("lastState") or {}).get("terminated") or {}
+            message = (last_state.get("message") or "").strip()
+            reason = (last_state.get("reason") or "").strip()
+            restart_count = int(container_status.get("restartCount") or 0)
+            if restart_count <= 0 and not message and not reason:
+                continue
+
+            failure_text = " ".join(part for part in [reason, message] if part).strip()
+            lowered = failure_text.lower()
+            if any(
+                marker in lowered
+                for marker in (
+                    "unexpected eof",
+                    "unable to transfer source data to scratch space",
+                    "failed to pull image",
+                    "scratch",
+                )
+            ):
+                pod_name = metadata.get("name", "unknown-importer")
+                return (
+                    f"Importer pod '{pod_name}' is restarting during HTTP import: "
+                    f"{failure_text or 'unknown importer error'}"
+                )
+
+    code, out, err = _run(["oc", "describe", "pvc", dv_name, "-n", namespace])
+    describe_output = out or err
+    if code == 0 and describe_output and "importfailed" in describe_output.lower():
+        return f"PVC '{dv_name}' reports importFailed while the DataVolume is still running."
+
+    return ""
+
+
 def _run_qemu_convert_with_progress(cmd: list[str], progress_callback: ProgressCallback | None = None) -> Tuple[int, str, str]:
     process = subprocess.Popen(
         cmd,
@@ -543,6 +602,12 @@ def wait_for_data_volume(
             return payload
         if phase in {"Failed", "Unknown"}:
             raise RuntimeError(f"DataVolume '{dv_name}' failed with phase '{phase}' and progress '{progress or 'N/A'}'.")
+        if phase in {"ImportScheduled", "ImportInProgress"}:
+            importer_failure = _get_importer_failure(namespace, dv_name)
+            if importer_failure:
+                raise RuntimeError(
+                    f"DataVolume '{dv_name}' import is unstable: {importer_failure}"
+                )
         if phase in {"Pending", "PendingPopulation", "ImportScheduled"} and time.time() >= pending_deadline:
             blocker = _diagnose_dv_blocker(namespace, dv_name, payload)
             if blocker:
