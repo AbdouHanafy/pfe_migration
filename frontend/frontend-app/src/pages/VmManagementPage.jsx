@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Card from '../components/Card'
 import Button from '../components/Button'
 import Input from '../components/Input'
@@ -13,6 +13,11 @@ const normalizeSource = (vm, source) => ({
   disks_count: Array.isArray(vm.disks) ? vm.disks.length : 0,
 })
 
+const parseErrorMessage = (err, fallback) => {
+  if (err instanceof Error && err.message) return err.message
+  return fallback
+}
+
 const VmManagementPage = () => {
   const { token } = useAuth()
   const [apiBase, setApiBase] = useState(import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000')
@@ -21,19 +26,33 @@ const VmManagementPage = () => {
   const [openshiftVms, setOpenshiftVms] = useState([])
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState({})
-  const [error, setError] = useState('')
+  const [openshiftError, setOpenshiftError] = useState('')
+  const [discoveryWarning, setDiscoveryWarning] = useState('')
 
   const api = useMemo(() => createApi(apiBase, token), [apiBase, token])
 
   const refresh = async () => {
-    setError('')
+    setOpenshiftError('')
+    setDiscoveryWarning('')
     setLoading(true)
     try {
-      const [kvm, ws, esxi] = await Promise.all([
-        api.fetchJson('/api/v1/discovery/kvm').catch(() => []),
-        api.fetchJson('/api/v1/discovery/vmware-workstation').catch(() => []),
-        api.fetchJson('/api/v1/discovery/vmware-esxi').catch(() => []),
+      const [kvmResult, wsResult, esxiResult, openshiftResult] = await Promise.allSettled([
+        api.fetchJson('/api/v1/discovery/kvm'),
+        api.fetchJson('/api/v1/discovery/vmware-workstation'),
+        api.fetchJson('/api/v1/discovery/vmware-esxi'),
+        api.fetchJson(`/api/v1/openshift/vms?namespace=${encodeURIComponent(namespace || 'vm-migration')}`),
       ])
+
+      const sourceWarnings = []
+      const kvm = kvmResult.status === 'fulfilled'
+        ? kvmResult.value
+        : (sourceWarnings.push(`KVM: ${parseErrorMessage(kvmResult.reason, 'discovery failed')}`), [])
+      const ws = wsResult.status === 'fulfilled'
+        ? wsResult.value
+        : (sourceWarnings.push(`VMware Workstation: ${parseErrorMessage(wsResult.reason, 'discovery failed')}`), [])
+      const esxi = esxiResult.status === 'fulfilled'
+        ? esxiResult.value
+        : (sourceWarnings.push(`VMware ESXi: ${parseErrorMessage(esxiResult.reason, 'discovery failed')}`), [])
 
       setDiscoveredVms([
         ...kvm.map((vm) => normalizeSource(vm, 'kvm')),
@@ -41,18 +60,29 @@ const VmManagementPage = () => {
         ...esxi.map((vm) => normalizeSource(vm, 'vmware-esxi')),
       ])
 
-      const openshift = await api.fetchJson(`/api/v1/openshift/vms?namespace=${encodeURIComponent(namespace || 'vm-migration')}`).catch(() => ({ items: [] }))
+      const openshift = openshiftResult.status === 'fulfilled'
+        ? openshiftResult.value
+        : (setOpenshiftError(`OpenShift namespace '${namespace || 'vm-migration'}': ${parseErrorMessage(openshiftResult.reason, 'listing failed')}`), { items: [] })
       setOpenshiftVms(Array.isArray(openshift.items) ? openshift.items : [])
+
+      if (sourceWarnings.length > 0) {
+        setDiscoveryWarning(sourceWarnings.join(' | '))
+      }
     } catch (err) {
-      setError(err.message || 'Failed to discover VMs')
+      setOpenshiftError(err.message || 'Failed to discover VMs')
     } finally {
       setLoading(false)
     }
   }
 
+  useEffect(() => {
+    if (!token) return
+    refresh()
+  }, [token, api])
+
   const controlVm = async (vmName, action) => {
     const actionKey = `${action}-${vmName}`
-    setError('')
+    setOpenshiftError('')
     setActionLoading((current) => ({ ...current, [actionKey]: true }))
     try {
       await api.fetchJson(`/api/v1/openshift/vms/${encodeURIComponent(vmName)}/${action}?namespace=${encodeURIComponent(namespace || 'vm-migration')}`, {
@@ -60,7 +90,7 @@ const VmManagementPage = () => {
       })
       await refresh()
     } catch (err) {
-      setError(err.message || `Failed to ${action} VM`)
+      setOpenshiftError(err.message || `Failed to ${action} VM`)
     } finally {
       setActionLoading((current) => ({ ...current, [actionKey]: false }))
     }
@@ -89,7 +119,7 @@ const VmManagementPage = () => {
             </>
           )}
         >
-          {error ? <p className="error">{error}</p> : null}
+          {openshiftError ? <p className="error">{openshiftError}</p> : null}
           <div className="list vm-list">
             {openshiftVms.length === 0 ? <p className="empty">No OpenShift VMs found in this namespace yet.</p> : null}
             {openshiftVms.map((vm) => (
@@ -149,9 +179,15 @@ const VmManagementPage = () => {
             </>
           )}
         >
-          {error ? <p className="error">{error}</p> : null}
+          {discoveryWarning ? <p className="error">{discoveryWarning}</p> : null}
           <div className="list vm-list">
-            {discoveredVms.length === 0 ? <p className="empty">No VMs discovered yet.</p> : null}
+            {discoveredVms.length === 0 ? (
+              <p className="empty">
+                {discoveryWarning
+                  ? 'No source VMs are available from the backend right now. Check the source-specific errors above or use a Local Agent source.'
+                  : 'No source VMs discovered yet.'}
+              </p>
+            ) : null}
             {discoveredVms.map((vm) => (
               <div key={`${vm.source}-${vm.uuid || vm.name}`} className="item item-stack">
                 <div className="row-between">
