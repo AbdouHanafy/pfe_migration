@@ -53,6 +53,16 @@ def _run(cmd: list[str]) -> Tuple[int, str, str]:
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
+def _wait_resource_deleted(kind: str, name: str, namespace: str, timeout_seconds: int = 60) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        code, _, _ = _run(["oc", "get", kind, name, "-n", namespace])
+        if code != 0:
+            return
+        time.sleep(2)
+    raise RuntimeError(f"Timed out waiting for {kind}/{name} in namespace '{namespace}' to be deleted.")
+
+
 def _diagnose_dv_blocker(namespace: str, dv_name: str, payload: Dict) -> str:
     claim_name = payload.get("status", {}).get("claimName") or dv_name
     code, out, err = _run(["oc", "describe", "pvc", claim_name, "-n", namespace])
@@ -522,9 +532,21 @@ def delete_datasource_if_exists(namespace: str, dv_name: str) -> None:
     _run(["oc", "delete", "pod", "-n", namespace, "--selector", "app=containerized-data-importer", "--ignore-not-found=true"])
 
 
+def _cleanup_stale_data_volume(namespace: str, dv_name: str) -> None:
+    code, _, _ = _run(["oc", "get", "dv", dv_name, "-n", namespace])
+    if code != 0:
+        return
+
+    _run(["oc", "delete", "dv", dv_name, "-n", namespace, "--ignore-not-found=true"])
+    _run(["oc", "delete", "pvc", dv_name, "-n", namespace, "--ignore-not-found=true"])
+    _wait_resource_deleted("dv", dv_name, namespace)
+    _wait_resource_deleted("pvc", dv_name, namespace)
+
+
 def create_data_volume_http(image_path: str, dv_name: str, size: str, namespace: str) -> DataVolumeResult:
     effective_size = resolve_upload_size(image_path, size)
     import_url = build_import_url(image_path)
+    _cleanup_stale_data_volume(namespace, dv_name)
     manifest = {
         "apiVersion": "cdi.kubevirt.io/v1beta1",
         "kind": "DataVolume",
